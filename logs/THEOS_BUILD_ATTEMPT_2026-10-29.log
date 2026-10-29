@@ -1,0 +1,86 @@
+LumenBoard Theos build diagnostic log
+Date: 2026-10-29
+Working tree: extracted from LumenBoard-Development-Fresh-theos-build-attempt.zip
+
+$ cat /etc/os-release
+PRETTY_NAME="Debian GNU/Linux 13 (trixie)"
+VERSION_ID="13"
+VERSION_CODENAME=trixie
+
+$ uname -a
+Linux a051161a7448 6.18.55 #1 SMP Wed Oct 14 2026 x86_64 GNU/Linux
+
+$ uname -m; dpkg --print-architecture
+x86_64
+amd64
+
+Available commands:
+clang=/usr/local/swift/usr/bin/clang
+clang++=/usr/local/swift/usr/bin/clang++
+gcc=/usr/bin/gcc
+g++=/usr/bin/g++
+make=/usr/bin/make
+gmake=/usr/bin/gmake
+dpkg-deb=/usr/bin/dpkg-deb
+dpkg-buildpackage=/usr/bin/dpkg-buildpackage
+ldid=NOT FOUND
+xcrun=NOT FOUND
+xcodebuild=NOT FOUND
+llvm-ar=/usr/local/swift/usr/bin/llvm-ar
+llvm-ranlib=/usr/local/swift/usr/bin/llvm-ranlib
+curl=/usr/local/bin/curl
+wget=/usr/bin/wget
+git=/usr/bin/git
+tar=/usr/bin/tar
+xz=/usr/bin/xz
+rsync=/usr/bin/rsync
+
+$ env | grep -Ei 'proxy|THEOS|SDK'
+Proxy variables are empty; THEOS and SDK variables are unset.
+
+Filesystem search:
+No Theos tree, makefiles/common.mk, iPhoneOS*.sdk, iPhoneSimulator*.sdk, ldid, or standalone iOS toolchain found in searched paths (/opt, /usr/local, /usr/share, /root, /home, /tmp, /var/tmp, /mnt/data; bounded-depth search from /).
+
+$ find /var/cache/apt/archives -maxdepth 1 -type f
+No cached .deb files found.
+$ find /var/lib/apt/lists -maxdepth 1 -type f
+Only lock file; no usable package lists.
+
+$ getent ahosts github.com
+(no output)
+$ getent ahosts raw.githubusercontent.com
+(no output)
+$ getent ahosts deb.debian.org
+(no output)
+
+Python socket.getaddrinfo:
+github.com gaierror(-3, 'Temporary failure in name resolution')
+raw.githubusercontent.com gaierror(-3, 'Temporary failure in name resolution')
+deb.debian.org gaierror(-3, 'Temporary failure in name resolution')
+
+TCP diagnostics (socket.connect):
+168.63.129.16:53 ConnectionRefusedError(111, 'Connection refused')
+172.26.36.1:443 ConnectionRefusedError(111, 'Connection refused')
+140.82.112.4:443 ConnectionRefusedError(111, 'Connection refused')
+151.101.2.132:443 ConnectionRefusedError(111, 'Connection refused')
+
+$ curl -IL --connect-timeout 5 --max-time 10 https://github.com/theos/theos
+curl: (6) Could not resolve host: github.com
+$ curl -IL --connect-timeout 5 --max-time 10 https://raw.githubusercontent.com/theos/sdks/master/README.md
+curl: (6) Could not resolve host: raw.githubusercontent.com
+$ curl -IL --connect-timeout 5 --max-time 10 https://deb.debian.org/debian/
+curl: (6) Could not resolve host: deb.debian.org
+
+Direct-IP tests used curl --resolve for github.com:443, raw.githubusercontent.com:443, and deb.debian.org:443 with TLS verification enabled. Each failed with curl: (7) Failed to connect / connection refused. No TLS bypass and no system network configuration changes were made.
+
+$ make clean package FINALPACKAGE=1
+Makefile:7: /makefiles/common.mk: No such file or directory
+make: *** No rule to make target '/makefiles/common.mk'. Stop.
+EXIT=2
+
+$ python3 -m unittest discover -s tests -v
+Ran 68 tests in 0.118s
+OK
+EXIT=0
+
+No .deb produced. No package installation, iPhone access, PosterBoard write, GitHub repository creation, or push performed.

@@ -1,84 +1,139 @@
-# LumenBoard Theos build attempt — 2026-10-29
+# LumenBoard — Theos build investigation (2026-10-29)
 
-## Result
+## Verdict
 
-**Blocked before compilation. No `.deb` was produced.** This report intentionally does not treat a source archive or a data-only Debian package as a compiled iOS package.
+**No real `.deb` was produced. Compilation is blocked before the first Objective-C compile step.** No package was fabricated, no iPhone installation was attempted, and PosterBoard native writes remain disabled.
 
-## Starting point and changes
+## Starting artifact and Git provenance
 
-- Starting Git commit: `1ae34bd` (`feat: generate full offline static wallpaper descriptors`).
-- Host: Debian GNU/Linux 13 (trixie), x86_64, Linux kernel `6.18.55`.
-- Available tools: Clang 17.0.0, GCC 14.2.0, GNU Make 4.4.1, `dpkg-deb` 1.22.22, Git, Python 3.13, `fakeroot`, and `dpkg-dev`.
-- `THEOS` is unset; no `xcrun` command; filesystem search found no `iPhoneOS*.sdk`, `iPhoneSimulator*.sdk`, Theos installation, `ldid`, or standalone iOS toolchain.
-- No Git remote is configured. No GitHub repository was created and no push was made.
-- Makefile adjustment: `ARCHS` now targets `arm64` only. The iPhone X can execute arm64 binaries, and this avoids depending on the newer arm64e ABI toolchain path that Theos documents as problematic on non-macOS hosts. The package still uses `THEOS_PACKAGE_SCHEME = rootless`.
+The supplied starting artifact was `LumenBoard-Development-Fresh-theos-build-attempt.zip`, described in the preceding handoff as commit `a11e76c`. The ZIP contains the project files but **does not contain a `.git` directory**, and no other LumenBoard Git repository or object database was found in the accessible filesystem. Therefore this environment cannot independently verify that `a11e76c` is an ancestor or preserve its original Git history. A recovered local snapshot commit is recorded for the new diagnostic changes; it is not represented as a verified descendant of `a11e76c`. To preserve the original ancestry, supply a repository bundle or archive that includes Git objects (for example, `git bundle create lumenboard.bundle --all` from the original clone).
 
-## Commands actually run
+## Environment inventory
 
-1. Environment inventory: `uname -a`, `/etc/os-release`, `uname -m`, `clang --version`, `gcc --version`, `make --version`, `dpkg-deb --version`, command discovery and filesystem search for iPhoneOS SDKs/Theos/toolchain.
-2. Build command from the project root:
+- OS: Debian GNU/Linux 13 (trixie), architecture `amd64` / `x86_64`.
+- Kernel: Linux `6.18.55`.
+- Available: Swift-distributed Clang/Clang++ 17, GCC/G++ 14, GNU Make 4.4.1, `dpkg-deb` 1.22.22, `dpkg-buildpackage`, `fakeroot`, `git`, `curl`, `wget`, `tar`, `xz`, `rsync`, `unzip`, `perl`, `file`.
+- Debian packages already installed include `libtinfo6`, `libxml2`, `rsync`, `unzip`, `perl`, `fakeroot`, and `dpkg-dev`; no package installation was attempted.
+- Not found: `THEOS` variable, `$THEOS/makefiles/common.mk`, any Theos tree, any `iPhoneOS*.sdk`, `iPhoneSimulator*.sdk`, `ldid`, or an iOS cross-toolchain under the searched filesystem roots.
+- APT lists contain no usable package index files; `/var/cache/apt/archives` contains no cached `.deb` dependencies.
+- Proxy variables are empty; `/etc/resolv.conf` specifies DNS server `168.63.129.16`; default route is via `172.26.36.1` on `eth0`.
 
-   ```sh
-   make clean package FINALPACKAGE=1
-   ```
+## Network diagnostics
 
-   First attempt (before the Makefile architecture comment was added) failed at line 5; the repeat attempt after the edit failed at line 7. Both emitted the same error:
+The failures were tested separately rather than inferred from a single `curl` error:
 
-   ```text
-   Makefile:7: /makefiles/common.mk: No such file or directory
-   make: *** No rule to make target '/makefiles/common.mk'. Stop.
-   ```
+- `getent ahosts github.com`, `raw.githubusercontent.com`, `deb.debian.org`: no addresses returned.
+- Python `socket.getaddrinfo` for those hosts: `gaierror(-3, 'Temporary failure in name resolution')`.
+- TCP connect to `168.63.129.16:53`: `ConnectionRefusedError(111, 'Connection refused')`.
+- TCP connect to public HTTPS endpoints (including direct known IPs for GitHub and Debian): `ConnectionRefusedError(111, 'Connection refused')` after approximately one second.
+- `curl -IL https://github.com/theos/theos`, `curl -IL https://raw.githubusercontent.com/theos/sdks/master/README.md`, and `curl -IL https://deb.debian.org/debian/`: `curl: (6) Could not resolve host`.
+- Direct-IP HTTPS attempts with `curl --resolve` also failed to connect. TLS certificate verification was not disabled.
+- `apt-get update` was not repeated because the previous attempt and current empty APT lists already show repository access is unavailable; no system network configuration was changed.
 
-   Exit status: `2`. Since `THEOS` is unset, `$(THEOS)/makefiles/common.mk` resolves to `/makefiles/common.mk`.
+These results show that this execution container cannot access the external network using its configured route/DNS. The network restriction is not fixed by changing the project Makefile. No unverified mirror, hardcoded DNS modification, or TLS bypass was used.
 
-3. Network check:
+## Build configuration review
 
-   ```sh
-   curl -IL --max-time 12 https://github.com/theos/theos
-   curl -I --max-time 8 https://theos.dev/docs/installation-linux
-   ```
+Root `Makefile` currently specifies:
 
-   Both failed with `curl: (6) Could not resolve host`.
+```make
+ARCHS = arm64
+TARGET = iphone:clang:latest:16.0
+THEOS_PACKAGE_SCHEME = rootless
+```
 
-4. Debian package-index refresh:
+It builds only the `Preferences` subproject. The daemon in `Daemon/main.m` remains an unbuilt prototype and is not installed. `control` declares `Architecture: iphoneos-arm64`; `Preferences/Makefile` requests UIKit, PhotosUI, Photos, UniformTypeIdentifiers and the private Preferences framework. The PreferenceLoader entry and bundle metadata are present in the source archive.
 
-   ```sh
-   apt-get -o Acquire::Retries=0 -o Acquire::http::Timeout=8 -o Acquire::https::Timeout=8 update
-   ```
+The `arm64` choice is plausible for an iPhone X and avoids claiming that this Linux toolchain can emit the newer arm64e ABI. However, the target, framework imports, link flags, bundle staging paths and package architecture are **not validated by a real build**. The Makefile was not changed during this diagnostic pass because no toolchain was available to test a speculative edit.
 
-   It failed to resolve `deb.debian.org` for `trixie`, `trixie-updates`, and `trixie-security`. There were no usable package lists in `/var/lib/apt/lists`.
+## Commands and exact results
 
-5. Existing portable test suite:
+Build command executed from the extracted project root:
 
-   ```sh
-   python3 -m unittest discover -s tests -v
-   ```
+```sh
+make clean package FINALPACKAGE=1
+```
 
-   Result: **68 tests passed**. These test Python utilities and structural/package contracts; they do not compile Objective-C, link an iOS bundle, or test native PosterBoard.
+Output:
 
-## Why a legitimate build cannot be completed in this session
+```text
+Makefile:7: /makefiles/common.mk: No such file or directory
+make: *** No rule to make target '/makefiles/common.mk'.  Stop.
+```
 
-The missing prerequisites are not just `xcrun`: there is no Theos makefile tree, no iOS SDK headers/frameworks, and no iOS cross-linker/toolchain. The official Theos Linux instructions require installing Theos and an iOS SDK/toolchain. The public `theos/sdks` repository provides an iOS 16.5 SDK release, which is a reasonable candidate for an iOS 16 deployment target, but the build container cannot resolve GitHub or Debian hosts to fetch it. No unknown mirror or unverified SDK archive was used.
+Exit code: `2`. With `THEOS` unset, `$(THEOS)/makefiles/common.mk` resolves to `/makefiles/common.mk`. The failure occurs before compilation, so there is no compiler diagnostic about Objective-C or SDK compatibility yet.
 
-References:
+Tests:
 
-- Theos Linux installation: https://theos.dev/docs/installation-linux
-- Theos rootless scheme: https://theos.dev/docs/rootless
-- Theos package architecture/metadata: https://theos.dev/docs/packaging
-- Public patched SDK repository and iOS 16.5 release: https://github.com/theos/sdks/releases
+```sh
+python3 -m unittest discover -s tests -v
+```
 
-## Packaging and device validation status
+Result: **68 tests passed** (`Ran 68 tests in 0.118s`, `OK`). These cover the Python utilities and structural validation, not Objective-C compilation, native rendering or iPhone behavior.
 
-| Check | Status | Evidence |
-|---|---|---|
-| Theos installed/configured | **Not done** | `THEOS` unset; no `makefiles/common.mk` |
-| Objective-C compiled | **Not done** | Build stopped before compile |
-| iOS preference bundle linked | **Not done** | No SDK/frameworks/toolchain |
-| `.deb` generated | **No** | No package artifact exists from this run |
-| Debian archive/control validated | **Not applicable** | No `.deb` to inspect |
-| Installed on iPhone | **Not done** | No device installation attempted |
-| PosterBoard tested on iOS 16.7.16 | **Not done** | No device/runtime test; native writer remains disabled |
+The full command/output record is in [`logs/THEOS_BUILD_ATTEMPT_2026-10-29.log`](../logs/THEOS_BUILD_ATTEMPT_2026-10-29.log).
 
-## Next concrete step
+## Free, official dependency path
 
-Run the build in a network-enabled Linux/macOS environment with the official Theos installer, the official iOS 16.5 SDK from `theos/sdks`, the supported Linux toolchain (or macOS/Xcode), and the required Theos headers. On Linux, use the arm64 target already set in the Makefile, then execute `make clean package FINALPACKAGE=1`, inspect the generated package with `dpkg-deb --info` and `dpkg-deb --contents`, verify the staged Preference bundle contains a real Mach-O executable, and calculate SHA-256. Do not install it on the phone or enable native PosterBoard writes without explicit authorization and a separate device validation step.
+The official Theos Linux installer is documented at <https://theos.dev/docs/installation-linux> and installs the Theos tree, Linux iOS toolchain and SDKs. Its current installer sources the x86-64 non-Swift toolchain from the `L1ghtmann/llvm-project` release and downloads patched SDKs via Theos' own `install-sdk` script. The official `theos/sdks` repository publishes `iPhoneOS16.5.sdk`; this is a reasonable candidate for this project's iOS 16.0 deployment target, subject to compilation checks.
+
+On a network-enabled Debian/Ubuntu x86-64 machine, use a normal (non-root) user and the official installer:
+
+```sh
+sudo apt-get update
+sudo apt-get install -y bash curl sudo build-essential fakeroot rsync curl perl git libxml2 libtinfo6 unzip xz-utils file
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
+```
+
+When prompted, choose the **non-Swift** toolchain. After the installer completes, verify the actual paths rather than trusting its success message:
+
+```sh
+export THEOS="$HOME/theos"
+test -f "$THEOS/makefiles/common.mk"
+test -x "$THEOS/toolchain/linux/iphone/bin/clang"
+find "$THEOS/sdks" -maxdepth 1 -type d -name 'iPhoneOS*.sdk' -print
+"$THEOS/toolchain/linux/iphone/bin/clang" --version
+```
+
+For offline transfer to this environment, archive the complete `$THEOS` directory, preserving symlinks and permissions:
+
+```sh
+tar -C "$HOME" -cJf theos-linux-x86_64.tar.xz theos
+sha256sum theos-linux-x86_64.tar.xz
+```
+
+Transfer `theos-linux-x86_64.tar.xz` and its SHA-256 through the chat upload. Do not download an SDK from an unknown mirror. If a full Theos directory is too large to upload, transfer at minimum the complete Theos source tree **including submodules/vendor files**, `toolchain/linux/iphone/`, and `sdks/iPhoneOS16.5.sdk/`, preserving file modes and symlinks; also include the official installer/toolchain provenance and hashes. A standalone SDK by itself is insufficient.
+
+Official references:
+
+- Theos Linux installation: <https://theos.dev/docs/installation-linux>
+- Theos rootless scheme: <https://theos.dev/docs/rootless>
+- Theos variables/package scheme: <https://theos.dev/docs/variables>
+- Official patched SDK repository: <https://github.com/theos/sdks>
+- Official SDK releases: <https://github.com/theos/sdks/releases>
+
+## Reproducible build and package checks
+
+A helper script [`tools/build_and_verify_deb.sh`](../tools/build_and_verify_deb.sh) is included. Once Theos is available, it:
+
+1. requires a valid Theos tree and iOS SDK/toolchain;
+2. runs `make clean package FINALPACKAGE=1` with `THEOS_PACKAGE_SCHEME=rootless`;
+3. requires exactly one `.deb` under `packages/`;
+4. checks the Debian control metadata and `iphoneos-arm64` architecture;
+5. extracts the package into a temporary directory (does not install it);
+6. checks the rootless PreferenceLoader and PreferenceBundle paths;
+7. requires a real arm64 Mach-O binary in the preference bundle;
+8. records package metadata, contents and SHA-256.
+
+No `.deb` exists from the current attempt, so package metadata, binary architecture and SHA-256 of a `.deb` cannot be reported.
+
+## Validation levels
+
+| Level | Result |
+|---|---|
+| 1. Objective-C compilation | **Not completed** |
+| 2. `.deb` structure/content | **Not applicable — no `.deb`** |
+| 3. Installation on iPhone | **Not performed** |
+| 4. PosterBoard compatibility on iOS 16.7.16 | **Not tested** |
+
+No install, respring, daemon activation, native PosterBoard write, or GitHub push was performed.
