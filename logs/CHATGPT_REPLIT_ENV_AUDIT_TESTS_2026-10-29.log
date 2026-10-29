@@ -68,6 +68,6 @@ test_rejects_wallpaper_plist_missing_expected_fields (test_tendies_inspect.Tendi
 test_rejects_windows_path_separator (test_tendies_inspect.TendiesInspectorTests.test_rejects_windows_path_separator) ... ok
 
 ----------------------------------------------------------------------
-Ran 68 tests in 0.107s
+Ran 68 tests in 0.112s
 
 OK
