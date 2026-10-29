@@ -1,0 +1,10 @@
+Package: com.iuyghi.lumenboard
+Name: LumenBoard
+Version: 0.1.0-1
+Architecture: iphoneos-arm64
+Description: Fresh development baseline for managing custom PosterBoard source media on iOS 16.
+Maintainer: iuyghi
+Author: iuyghi
+Section: Tweaks
+Depends: firmware (>= 16.0), firmware (<< 17.0), preferenceloader
+Priority: optional
