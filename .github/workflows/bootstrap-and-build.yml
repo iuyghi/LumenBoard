@@ -1,0 +1,127 @@
+name: Verify source bundle, import history, and build DEB
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "provenance/transfer/**"
+      - ".github/workflows/bootstrap-and-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: lumenboard-main-source-import
+  cancel-in-progress: false
+
+jobs:
+  verify-import-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - name: Checkout private destination repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Reconstruct and verify original Git bundle
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d provenance/transfer
+          mapfile -t parts < <(find provenance/transfer -maxdepth 1 -type f -name '*.b64' -print | LC_ALL=C sort)
+          echo "Bundle segments found: ${#parts[@]}"
+          test "${#parts[@]}" -eq 46
+          for p in "${parts[@]}"; do test -s "$p"; done
+          cat "${parts[@]}" > "$RUNNER_TEMP/LumenBoard.bundle.b64"
+          base64 --decode "$RUNNER_TEMP/LumenBoard.bundle.b64" > "$RUNNER_TEMP/LumenBoard.bundle"
+          echo "3c35135f43dc91ef92edd0e6b34df8e741656389ef4d5a4b74a32d6d38c272b1  $RUNNER_TEMP/LumenBoard.bundle" | sha256sum --check -
+          git bundle verify "$RUNNER_TEMP/LumenBoard.bundle"
+          git clone "$RUNNER_TEMP/LumenBoard.bundle" "$RUNNER_TEMP/source-checkout"
+          test "$(git -C "$RUNNER_TEMP/source-checkout" rev-parse HEAD)" = "5c9bfd516d93243d3bd7625839b39e0e68f6c9fb"
+          git -C "$RUNNER_TEMP/source-checkout" cat-file -e '5c9bfd516d93243d3bd7625839b39e0e68f6c9fb^{commit}'
+          git -C "$RUNNER_TEMP/source-checkout" fsck --full --strict
+          test -z "$(git -C "$RUNNER_TEMP/source-checkout" status --porcelain)"
+          echo "Verified original commit, bundle hash, object database, and clean checkout."
+
+      - name: Import source history without force-push
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_COMMIT=5c9bfd516d93243d3bd7625839b39e0e68f6c9fb
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git cat-file -e "$SOURCE_COMMIT^{commit}" 2>/dev/null; then
+            git fetch "$RUNNER_TEMP/LumenBoard.bundle" refs/heads/main:refs/remotes/lumenboard-source/main
+            test "$(git rev-parse refs/remotes/lumenboard-source/main)" = "$SOURCE_COMMIT"
+            git merge --allow-unrelated-histories --no-ff --no-edit refs/remotes/lumenboard-source/main
+          fi
+          git merge-base --is-ancestor "$SOURCE_COMMIT" HEAD
+          git rm -r provenance/transfer
+          mkdir -p provenance
+          cat > provenance/SOURCE_PROVENANCE.md <<'EOF'
+          # Source provenance
+
+          This repository imports the verified LumenBoard source history from the Git bundle whose SHA-256 is
+          `3c35135f43dc91ef92edd0e6b34df8e741656389ef4d5a4b74a32d6d38c272b1`.
+
+          Original source HEAD: `5c9bfd516d93243d3bd7625839b39e0e68f6c9fb`.
+
+          Immutable source ZIP: `LumenBoard-Development-Fresh-source-immutable-2026-10-29.zip`
+          SHA-256: `bab4191bffc8d458b4d94d94852d0c04e4271c060437e0bf268fae760df35962`.
+
+          The local audit found that the 44 non-cache files in the immutable ZIP match the corresponding files in
+          the source commit byte-for-byte. The Git bundle contains the original commit history and 49 tracked files,
+          including five additional audit/support documentation or log files outside the ZIP snapshot.
+
+          The bundle was reconstructed in GitHub Actions from temporary transfer segments and is hash-checked before
+          any merge. This import uses a non-fast-forward merge with unrelated histories enabled; it does not force-push.
+          EOF
+          git add provenance/SOURCE_PROVENANCE.md
+          if ! git diff --cached --quiet; then
+            git commit -m "bootstrap: import verified LumenBoard source history"
+          fi
+          git push origin HEAD:main
+
+      - name: Run unit tests and Python static checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse 5c9bfd516d93243d3bd7625839b39e0e68f6c9fb^{commit})" = "5c9bfd516d93243d3bd7625839b39e0e68f6c9fb"
+          python3 -m unittest discover -s tests -v
+          python3 -m compileall -q tools tests
+
+      - name: Install build dependencies and Theos
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential clang make perl curl ca-certificates git python3 dpkg-dev fakeroot rsync file xz-utils libxml2-utils libplist-utils libtinfo6
+          CI=true bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
+          test -d "$HOME/theos/makefiles"
+          echo "THEOS=$HOME/theos" >> "$GITHUB_ENV"
+          echo "$HOME/theos/bin" >> "$GITHUB_PATH"
+
+      - name: Build and verify rootless DEB
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tools/build_and_verify_deb.sh
+          mapfile -t packages < <(find packages -maxdepth 1 -type f -name '*.deb' -print | sort)
+          test "${#packages[@]}" -eq 1
+          dpkg-deb --info "${packages[0]}"
+          dpkg-deb -f "${packages[0]}" Package Version Architecture Depends
+          dpkg-deb --contents "${packages[0]}"
+          file "${packages[0]}"
+          sha256sum "${packages[0]}"
+
+      - name: Upload verified DEB artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: LumenBoard-rootless-DEB
+          path: packages/*.deb
+          if-no-files-found: error
+          retention-days: 14
