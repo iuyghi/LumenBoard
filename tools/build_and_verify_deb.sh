@@ -19,7 +19,8 @@ fi
 
 cd "$PROJECT_DIR"
 build_out="$(mktemp -d "${TMPDIR:-/tmp}/lumenboard-packages.XXXXXX")"
-trap 'rm -rf "$stage" 2>/dev/null || true; rm -rf "$build_out"' EXIT
+stage=""
+trap 'if [[ -n "${stage:-}" ]]; then rm -rf "$stage"; fi; rm -rf "$build_out"' EXIT
 THEOS_PACKAGE_SCHEME=rootless THEOS_PACKAGE_DIR="$build_out" make clean package FINALPACKAGE=1
 
 shopt -s nullglob
