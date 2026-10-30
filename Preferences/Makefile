@@ -1,3 +1,8 @@
+# Match the root target explicitly: aggregate sub-makes do not inherit
+# ordinary Makefile variables from the parent make unless exported.
+ARCHS = arm64
+TARGET = iphone:clang:latest:16.0
+
 include $(THEOS)/makefiles/common.mk
 
 BUNDLE_NAME = LumenBoardPrefs
