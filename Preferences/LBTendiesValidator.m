@@ -41,6 +41,7 @@ static NSData *LBTDecode(NSData *input, NSUInteger expected, uint16_t method, NS
 @property(nonatomic) uint16_t flags,method;
 @property(nonatomic) uint32_t crc,compressed,uncompressed,localOffset,external;
 @property(nonatomic) BOOL directory;
+@property(nonatomic) uint64_t localHeaderSize,dataOffset,descriptorSize,recordEnd;
 @end
 @implementation LBTEntry @end
 
@@ -57,7 +58,7 @@ static NSData *LBTDecode(NSData *input, NSUInteger expected, uint16_t method, NS
     uint32_t cdSize=LBTU32(b+eocd+12),cdOffset=LBTU32(b+eocd+16);
     if(disk||cdDisk||onDisk!=count){if(error)*error=LBTMakeError(3,@"Multi-disk ZIP unsupported");return @{@"status":@"unsupported",@"errors":@[@"Multi-disk ZIP"]};}
     if(count==0xffff||cdSize==0xffffffff||cdOffset==0xffffffff){if(error)*error=LBTMakeError(4,@"ZIP64 unsupported");return @{@"status":@"unsupported",@"errors":@[@"ZIP64"]};}
-    if(!count||count>LBTMaxEntries||!LBTRange(eocd,22+comment,n)||(uint64_t)cdOffset+cdSize>eocd){if(error)*error=LBTMakeError(5,@"Invalid central directory");return @{@"status":@"invalid",@"errors":@[@"Invalid central directory"]};}
+    if(!count||count>LBTMaxEntries||!LBTRange(eocd,22+comment,n)||eocd+22+(NSUInteger)comment!=n||(uint64_t)cdOffset+cdSize!=eocd){if(error)*error=LBTMakeError(5,@"Invalid central directory");return @{@"status":@"invalid",@"errors":@[@"Invalid central directory"]};}
     NSMutableArray<LBTEntry *> *entries=[NSMutableArray array]; NSMutableSet *keys=[NSMutableSet set]; uint64_t total=0; NSUInteger cursor=cdOffset; BOOL descriptor=NO,container=NO;
     for(NSUInteger i=0;i<count;i++){
         if(!LBTRange(cursor,46,n)||LBTU32(b+cursor)!=0x02014b50){if(error)*error=LBTMakeError(6,@"Malformed central directory record");return @{@"status":@"invalid",@"errors":@[@"Malformed central directory"]};}
@@ -89,14 +90,35 @@ static NSData *LBTDecode(NSData *input, NSUInteger expected, uint16_t method, NS
     if(cursor!=cdOffset+cdSize){if(error)*error=LBTMakeError(19,@"Central directory size mismatch");return @{@"status":@"invalid",@"errors":@[@"Central directory mismatch"]};}
     if(container){if(error)*error=LBTMakeError(25,@"Whole-container archives are unsupported");return @{@"status":@"unsupported",@"errors":@[@"Container-format archive"]};}
     if(!descriptor){if(error)*error=LBTMakeError(26,@"Descriptor directory not found");return @{@"status":@"incomplete",@"errors":@[@"Descriptor directory missing"]};}
-    NSMutableDictionary<NSString *,NSData *> *contents=[NSMutableDictionary dictionary]; NSMutableArray *plists=[NSMutableArray array],*wallpapers=[NSMutableArray array];
+    NSMutableDictionary<NSString *,NSData *> *contents=[NSMutableDictionary dictionary];
+    NSMutableArray *plists=[NSMutableArray array],*wallpapers=[NSMutableArray array],*occupiedRanges=[NSMutableArray array];
     for(LBTEntry *e in entries){
-        if(e.directory)continue; NSUInteger p=e.localOffset;
+        NSUInteger p=e.localOffset;
         if(!LBTRange(p,30,n)||LBTU32(b+p)!=0x04034b50){if(error)*error=LBTMakeError(27,@"Invalid local file header");return @{@"status":@"invalid",@"errors":@[@"Invalid local header"]};}
         uint16_t localFlags=LBTU16(b+p+6),localMethod=LBTU16(b+p+8),ln=LBTU16(b+p+26),le=LBTU16(b+p+28);
         if(!LBTRange(p+30,(NSUInteger)ln+le,n)){if(error)*error=LBTMakeError(73,@"Truncated local header fields");return @{@"status":@"invalid",@"errors":@[@"Truncated local header"]};}
-        NSUInteger data=p+30+(NSUInteger)ln+le; if(localFlags!=e.flags||localMethod!=e.method||!LBTRange(data,e.compressed,n)||data+e.compressed>cdOffset){if(error)*error=LBTMakeError(28,@"Local and central ZIP headers disagree");return @{@"status":@"invalid",@"errors":@[@"Header mismatch or truncated member"]};}
-        NSString *localName=[[NSString alloc]initWithBytes:b+p+30 length:ln encoding:NSUTF8StringEncoding]; if(![localName isEqualToString:e.name]){if(error)*error=LBTMakeError(29,@"Local and central entry names disagree");return @{@"status":@"invalid",@"errors":@[@"Filename mismatch"]};}
+        NSUInteger data=p+30+(NSUInteger)ln+le;
+        if(localFlags!=e.flags||localMethod!=e.method||!LBTRange(data,e.compressed,n)||data+e.compressed>cdOffset){if(error)*error=LBTMakeError(28,@"Local and central ZIP headers disagree");return @{@"status":@"invalid",@"errors":@[@"Header mismatch or truncated member"]};}
+        NSString *localName=[[NSString alloc]initWithBytes:b+p+30 length:ln encoding:NSUTF8StringEncoding];
+        if(![localName isEqualToString:e.name]){if(error)*error=LBTMakeError(29,@"Local and central entry names disagree");return @{@"status":@"invalid",@"errors":@[@"Filename mismatch"]};}
+        uint32_t localCRC=LBTU32(b+p+14),localCS=LBTU32(b+p+18),localUS=LBTU32(b+p+22);
+        if(e.flags&8){
+            if((localCRC&&localCRC!=e.crc)||(localCS&&localCS!=e.compressed)||(localUS&&localUS!=e.uncompressed)){if(error)*error=LBTMakeError(74,@"Non-zero local sizes disagree with data descriptor");return @{@"status":@"invalid",@"errors":@[@"Local descriptor fields mismatch"]};}
+        }else if(localCRC!=e.crc||localCS!=e.compressed||localUS!=e.uncompressed){
+            if(error)*error=LBTMakeError(75,@"Local CRC or sizes disagree with central directory");return @{@"status":@"invalid",@"errors":@[@"Local CRC or size mismatch"]};
+        }
+        NSUInteger descriptorSize=0,recordEnd=data+e.compressed;
+        if(e.flags&8){
+            NSUInteger descriptor=recordEnd;
+            if(!LBTRange(descriptor,12,cdOffset)){if(error)*error=LBTMakeError(76,@"Truncated ZIP data descriptor");return @{@"status":@"invalid",@"errors":@[@"Truncated data descriptor"]};}
+            if(LBTU32(b+descriptor)==0x08074b50){descriptor+=4;descriptorSize=16;}else descriptorSize=12;
+            if(!LBTRange(descriptor,12,cdOffset)||LBTU32(b+descriptor)!=e.crc||LBTU32(b+descriptor+4)!=e.compressed||LBTU32(b+descriptor+8)!=e.uncompressed){if(error)*error=LBTMakeError(77,@"ZIP data descriptor mismatch");return @{@"status":@"invalid",@"errors":@[@"Data descriptor mismatch"]};}
+            recordEnd+=descriptorSize;
+        }
+        if(recordEnd>cdOffset){if(error)*error=LBTMakeError(78,@"Local record overlaps central directory");return @{@"status":@"invalid",@"errors":@[@"Record overlaps central directory"]};}
+        e.localHeaderSize=30+(uint64_t)ln+le;e.dataOffset=data;e.descriptorSize=descriptorSize;e.recordEnd=recordEnd;
+        [occupiedRanges addObject:[NSValue valueWithRange:NSMakeRange(p,recordEnd-p)]];
+        if(e.directory){if(e.compressed||e.uncompressed){if(error)*error=LBTMakeError(79,@"Directory entry contains file data");return @{@"status":@"invalid",@"errors":@[@"Non-empty directory entry"]};}continue;}
         NSData *packed=[zip subdataWithRange:NSMakeRange(data,e.compressed)]; NSError *decodeError=nil; NSData *plain=LBTDecode(packed,e.uncompressed,e.method,&decodeError);
         if(!plain){if(error)*error=decodeError;return @{@"status":@"invalid",@"errors":@[decodeError.localizedDescription]};}
         uLong crcValue=crc32(0L,Z_NULL,0);crcValue=crc32(crcValue,plain.bytes,(uInt)plain.length);
@@ -112,6 +134,18 @@ static NSData *LBTDecode(NSData *input, NSUInteger expected, uint16_t method, NS
             }
         }
         contents[e.name]=plain;
+    }
+    [occupiedRanges sortUsingComparator:^NSComparisonResult(NSValue *a, NSValue *b) {
+        NSRange ra=a.rangeValue,rb=b.rangeValue;
+        if(ra.location<rb.location)return NSOrderedAscending;
+        if(ra.location>rb.location)return NSOrderedDescending;
+        return NSOrderedSame;
+    }];
+    NSUInteger previousEnd=0;
+    for(NSValue *value in occupiedRanges){
+        NSRange range=value.rangeValue;
+        if(range.location<previousEnd){if(error)*error=LBTMakeError(80,@"ZIP local records overlap");return @{@"status":@"invalid",@"errors":@[@"Overlapping local records"]};}
+        previousEnd=NSMaxRange(range);
     }
     if(!wallpapers.count){if(error)*error=LBTMakeError(34,@"No structurally complete Wallpaper.plist");return @{@"status":@"incomplete",@"errors":@[@"Wallpaper.plist missing"]};}
     NSMutableDictionary *report=[@{@"status":@"valid",@"format":@"descriptor",@"archiveBytes":@(zip.length),@"entryCount":@(entries.count),@"uncompressedBytes":@(total),@"sha256":LBTHash(zip),@"plistFiles":plists,@"wallpaperPlists":wallpapers,@"compatibility":@"not-tested",@"validatorVersion":@"1.0.0"} mutableCopy];
