@@ -368,7 +368,7 @@ jobs:
             exit 1
           fi
           mkdir -p packages
-          sha256sum "$DEB" > packages/LumenBoard-rootless-DEB.sha256
+          (cd packages && sha256sum "$(basename "$DEB")" > LumenBoard-rootless-DEB.sha256)
           {
             echo "Package: $PACKAGE"
             echo "Version: $VERSION"
