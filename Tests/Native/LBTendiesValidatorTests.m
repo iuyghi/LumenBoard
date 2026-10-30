@@ -25,7 +25,32 @@ static NSData *StoredZip(NSArray<NSDictionary *> *items, BOOL corruptCRC) {
     Append32(out,0x06054b50);Append16(out,0);Append16(out,0);Append16(out,(uint16_t)records.count);Append16(out,(uint16_t)records.count);Append32(out,(uint32_t)centralSize);Append32(out,(uint32_t)centralOffset);Append16(out,0);
     return out;
 }
-@interface LBTendiesValidatorTests : XCTestCase @end
+
+static NSUInteger FindZIPSignature(NSData *data, uint32_t signature) {
+    const uint8_t *b=data.bytes;
+    for(NSUInteger i=0;i+4<=data.length;i++)
+        if((uint32_t)b[i]|((uint32_t)b[i+1]<<8)|((uint32_t)b[i+2]<<16)|((uint32_t)b[i+3]<<24) == signature) return i;
+    return NSNotFound;
+}
+static NSData *StoredZipWithDescriptor(NSString *entryName, NSData *payload, BOOL signature) {
+    NSMutableData *out=[NSMutableData data]; NSData *name=[entryName dataUsingEncoding:NSUTF8StringEncoding];
+    uLong crc=crc32(0L,Z_NULL,0); crc=crc32(crc,payload.bytes,(uInt)payload.length);
+    Append32(out,0x04034b50); Append16(out,20); Append16(out,8); Append16(out,0); Append16(out,0); Append16(out,0);
+    Append32(out,0); Append32(out,0); Append32(out,0); Append16(out,(uint16_t)name.length); Append16(out,0);
+    [out appendData:name]; [out appendData:payload];
+    if(signature) Append32(out,0x08074b50);
+    Append32(out,(uint32_t)crc); Append32(out,(uint32_t)payload.length); Append32(out,(uint32_t)payload.length);
+    NSUInteger cd=out.length;
+    Append32(out,0x02014b50); Append16(out,20); Append16(out,20); Append16(out,8); Append16(out,0); Append16(out,0); Append16(out,0);
+    Append32(out,(uint32_t)crc); Append32(out,(uint32_t)payload.length); Append32(out,(uint32_t)payload.length);
+    Append16(out,(uint16_t)name.length); Append16(out,0); Append16(out,0); Append16(out,0); Append16(out,0);
+    Append32(out,0100644u<<16); Append32(out,0); [out appendData:name];
+    NSUInteger cds=out.length-cd;
+    Append32(out,0x06054b50); Append16(out,0); Append16(out,0); Append16(out,1); Append16(out,1);
+    Append32(out,(uint32_t)cds); Append32(out,(uint32_t)cd); Append16(out,0);
+    return out;
+}
+\n@interface LBTendiesValidatorTests : XCTestCase @end
 @implementation LBTendiesValidatorTests
 - (NSString *)writeZip:(NSData *)zip { NSString *p=[NSTemporaryDirectory() stringByAppendingPathComponent:[NSUUID.UUID.UUIDString stringByAppendingString:@".tendies"]];[zip writeToFile:p atomically:YES];return p; }
 - (void)testRejectsNonZip { NSString *p=[self writeZip:[@"not ZIP" dataUsingEncoding:NSUTF8StringEncoding]];NSError *e=nil;NSDictionary *r=[LBTendiesValidator validateArchiveAtPath:p extractToPath:nil error:&e];XCTAssertNotNil(e);XCTAssertNotEqualObjects(r[@"status"],@"valid");[[NSFileManager defaultManager]removeItemAtPath:p error:nil]; }
