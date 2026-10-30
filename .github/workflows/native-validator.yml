@@ -62,7 +62,7 @@ jobs:
           SDK_PATH="$(xcrun --sdk iphoneos --show-sdk-path)"
           SDK_VERSION="$(xcrun --sdk iphoneos --show-sdk-version)"
           mkdir -p "$HOME/theos/sdks"
-          ln -s "$SDK_PATH" "$HOME/theos/sdks/iPhoneOS.sdk"
+          ln -s "$SDK_PATH" "$HOME/theos/sdks/iPhoneOS${SDK_VERSION}.sdk"
           echo "Using Xcode iPhoneOS SDK $SDK_VERSION at $SDK_PATH"
       - name: Build rootless package
         run: |
@@ -78,6 +78,7 @@ jobs:
           dpkg-deb --contents "$DEB" | tee package-contents.txt
           dpkg-deb -f "$DEB" Package Version Architecture Depends | tee package-control.txt
           test "$(dpkg-deb -f "$DEB" Architecture)" = "iphoneos-arm64"
+          grep -q "var/jb/Library/PreferenceBundles/LumenBoardPrefs.bundle" package-contents.txt
           shasum -a 256 "$DEB" | tee SHA256SUMS
       - name: Upload package and verification
         uses: actions/upload-artifact@v4
