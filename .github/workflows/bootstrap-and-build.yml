@@ -166,7 +166,7 @@ jobs:
           git merge-base --is-ancestor "$INITIAL_MAIN" refs/remotes/origin/main
           git rm -r --ignore-unmatch provenance/transfer provenance/transfer-recovery
           mkdir -p provenance
-          cat > provenance/SOURCE_PROVENANCE.md <<EOF
+          cat > provenance/SOURCE_PROVENANCE.md <<'EOF'
           # LumenBoard source provenance
 
           ## Immutable source material
@@ -174,7 +174,7 @@ jobs:
           - Original Git bundle: `LumenBoard-Development-Fresh-chatgpt-replit-audit.bundle`
           - Git bundle SHA-256: `3c35135f43dc91ef92edd0e6b34df8e741656389ef4d5a4b74a32d6d38c272b1`
           - Original bundle size: 83,589 bytes
-          - Original Git source HEAD: `$SOURCE_COMMIT`
+          - Original Git source HEAD: `__SOURCE_COMMIT__`
           - Original source archive: `LumenBoard-Development-Fresh-source-immutable-2026-10-29.zip`
           - Source archive SHA-256: `bab4191bffc8d458b4d94d94852d0c04e4271c060437e0bf268fae760df35962`
           - Source archive size: 156,546 bytes
@@ -185,7 +185,7 @@ jobs:
 
           The original remote staging directory contained 46 Base64 fragments. Lexicographic concatenation was invalid. The forensic offset map found two duplicate intervals: offsets 62,000-64,000 (the segment named `part-06ab.b64`, already covered by `part-06b.b64`) and one duplicated character at offset 111,434 (the segment named `part-11bb1b2a3.b64`, already present in `part-12a-14.b64`). Missing source intervals were offsets 58,000-60,000 (2,000 characters) and 102,874-102,875 (one character).
 
-          A 51-entry, non-overlapping manifest was used. Its SHA-256 was `$MANIFEST_SHA256`. The workflow checked every segment's declared byte length, ASCII Base64 alphabet, uniqueness, contiguous start/end offsets and total size (111,452 characters), decoded with strict Base64 validation, and verified the resulting 83,589-byte bundle against the original SHA-256 before running any Git import command.
+          A 51-entry, non-overlapping manifest was used. Its SHA-256 was `__MANIFEST_SHA256__`. The workflow checked every segment's declared byte length, ASCII Base64 alphabet, uniqueness, contiguous start/end offsets and total size (111,452 characters), decoded with strict Base64 validation, and verified the resulting 83,589-byte bundle against the original SHA-256 before running any Git import command.
 
           ## ZIP-to-Git source comparison
 
@@ -201,14 +201,23 @@ jobs:
 
           - Destination repository: `iuyghi/LumenBoard` (private)
           - Destination branch: `main`
-          - Destination main SHA immediately before import: `$INITIAL_MAIN`
-          - Import merge commit: `$IMPORTED_HEAD`
+          - Destination main SHA immediately before import: `__INITIAL_MAIN__`
+          - Import merge commit: `__IMPORTED_HEAD__`
           - Source commit remains unchanged and is an ancestor of `main`.
           - The pre-existing destination main commit remains an ancestor of `main`.
           - Import used a normal merge and a normal, non-force push. No force-push or history rewrite was used.
 
           Temporary staging fragments and the reconstruction manifest were removed only after the bundle checksum, Git bundle validation, source commit, object integrity and remote import were verified. The complete original source history remains in Git.
           EOF
+          SOURCE_COMMIT="$SOURCE_COMMIT" INITIAL_MAIN="$INITIAL_MAIN" IMPORTED_HEAD="$IMPORTED_HEAD" MANIFEST_SHA256="$MANIFEST_SHA256" python3 - <<'PY'
+          import os
+          import pathlib
+          path = pathlib.Path("provenance/SOURCE_PROVENANCE.md")
+          text = path.read_text(encoding="utf-8")
+          for key in ("SOURCE_COMMIT", "INITIAL_MAIN", "IMPORTED_HEAD", "MANIFEST_SHA256"):
+              text = text.replace("__" + key + "__", os.environ[key])
+          path.write_text(text, encoding="utf-8")
+          PY
           git add provenance/SOURCE_PROVENANCE.md
           git commit -m "provenance: document verified original source import"
           PROVENANCE_HEAD="$(git rev-parse HEAD)"
@@ -333,7 +342,6 @@ jobs:
             echo "Rootless prefix: /var/jb"
             echo "Scope: package content and metadata verified; no device installation/runtime test performed"
           } | tee packages/BUILD-METADATA.txt
-          cp "$RUNNER_TEMP/lumenboard-audit/build-and-project-verification.log" "$RUNNER_TEMP/lumenboard-audit/" 2>/dev/null || true
           echo "PASS: fresh DEB metadata, dependencies, rootless paths, arm64 Mach-O and SHA-256 verified"
 
       - name: Upload verified rootless DEB
