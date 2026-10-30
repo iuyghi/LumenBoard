@@ -50,7 +50,8 @@ static NSData *StoredZipWithDescriptor(NSString *entryName, NSData *payload, BOO
     Append32(out,(uint32_t)cds); Append32(out,(uint32_t)cd); Append16(out,0);
     return out;
 }
-\n@interface LBTendiesValidatorTests : XCTestCase @end
+
+@interface LBTendiesValidatorTests : XCTestCase @end
 @implementation LBTendiesValidatorTests
 - (NSString *)writeZip:(NSData *)zip { NSString *p=[NSTemporaryDirectory() stringByAppendingPathComponent:[NSUUID.UUID.UUIDString stringByAppendingString:@".tendies"]];[zip writeToFile:p atomically:YES];return p; }
 - (void)testRejectsNonZip { NSString *p=[self writeZip:[@"not ZIP" dataUsingEncoding:NSUTF8StringEncoding]];NSError *e=nil;NSDictionary *r=[LBTendiesValidator validateArchiveAtPath:p extractToPath:nil error:&e];XCTAssertNotNil(e);XCTAssertNotEqualObjects(r[@"status"],@"valid");[[NSFileManager defaultManager]removeItemAtPath:p error:nil]; }
@@ -121,4 +122,100 @@ static NSData *StoredZipWithDescriptor(NSString *entryName, NSData *payload, BOO
     XCTAssertNotNil(e); XCTAssertEqualObjects(r[@"status"],@"invalid");
     [[NSFileManager defaultManager]removeItemAtPath:p error:nil]; [[NSFileManager defaultManager]removeItemAtPath:out error:nil];
 }
+
+- (void)testAcceptsSignedDataDescriptor {
+    NSDictionary *wp=@{@"identifier":@1,@"name":@"Synthetic",@"assets":@{}};
+    NSData *payload=[NSPropertyListSerialization dataWithPropertyList:wp format:NSPropertyListXMLFormat_v1_0 options:0 error:nil];
+    NSString *p=[self writeZip:StoredZipWithDescriptor(@"descriptors/fixture/Wallpaper.plist",payload,YES)];
+    NSError *e=nil; NSDictionary *r=[LBTendiesValidator validateArchiveAtPath:p extractToPath:nil error:&e];
+    XCTAssertNil(e); XCTAssertEqualObjects(r[@"status"],@"valid"); [[NSFileManager defaultManager]removeItemAtPath:p error:nil];
+}
+- (void)testAcceptsUnsignedDataDescriptor {
+    NSDictionary *wp=@{@"identifier":@1,@"name":@"Synthetic",@"assets":@{}};
+    NSData *payload=[NSPropertyListSerialization dataWithPropertyList:wp format:NSPropertyListXMLFormat_v1_0 options:0 error:nil];
+    NSString *p=[self writeZip:StoredZipWithDescriptor(@"descriptors/fixture/Wallpaper.plist",payload,NO)];
+    NSError *e=nil; NSDictionary *r=[LBTendiesValidator validateArchiveAtPath:p extractToPath:nil error:&e];
+    XCTAssertNil(e); XCTAssertEqualObjects(r[@"status"],@"valid"); [[NSFileManager defaultManager]removeItemAtPath:p error:nil];
+}
+- (void)testRejectsInconsistentLocalHeader {
+    NSMutableData *zip=[StoredZip(@[@{@"name":@"descriptors/a",@"data":[NSData data]}],NO) mutableCopy];
+    uint8_t method[2]={8,0}; [zip replaceBytesInRange:NSMakeRange(8,2) withBytes:method];
+    NSString *p=[self writeZip:zip]; NSError *e=nil; NSDictionary *r=[LBTendiesValidator validateArchiveAtPath:p extractToPath:nil error:&e];
+    XCTAssertNotNil(e); XCTAssertNotEqualObjects(r[@"status"],@"valid"); [[NSFileManager defaultManager]removeItemAtPath:p error:nil];
+}
+- (void)testRejectsInconsistentCentralDirectory {
+    NSMutableData *zip=[StoredZip(@[@{@"name":@"descriptors/a",@"data":[NSData data]}],NO) mutableCopy];
+    NSUInteger cd=FindZIPSignature(zip,0x02014b50); XCTAssertNotEqual(cd,NSNotFound);
+    uint8_t wrong[4]={1,0,0,0}; [zip replaceBytesInRange:NSMakeRange(cd+16,4) withBytes:wrong];
+    NSString *p=[self writeZip:zip]; NSError *e=nil; NSDictionary *r=[LBTendiesValidator validateArchiveAtPath:p extractToPath:nil error:&e];
+    XCTAssertNotNil(e); XCTAssertNotEqualObjects(r[@"status"],@"valid"); [[NSFileManager defaultManager]removeItemAtPath:p error:nil];
+}
+- (void)testRejectsOutOfRangeLocalOffset {
+    NSMutableData *zip=[StoredZip(@[@{@"name":@"descriptors/a",@"data":[NSData data]}],NO) mutableCopy];
+    NSUInteger cd=FindZIPSignature(zip,0x02014b50); uint8_t bad[4]={0xf0,0xff,0xff,0xff};
+    [zip replaceBytesInRange:NSMakeRange(cd+42,4) withBytes:bad];
+    NSString *p=[self writeZip:zip]; NSError *e=nil; NSDictionary *r=[LBTendiesValidator validateArchiveAtPath:p extractToPath:nil error:&e];
+    XCTAssertNotNil(e); XCTAssertNotEqualObjects(r[@"status"],@"valid"); [[NSFileManager defaultManager]removeItemAtPath:p error:nil];
+}
+- (void)testRejectsZIP64EOCD {
+    NSMutableData *zip=[StoredZip(@[@{@"name":@"descriptors/a",@"data":[NSData data]}],NO) mutableCopy];
+    NSUInteger eocd=FindZIPSignature(zip,0x06054b50); uint8_t marker[2]={0xff,0xff};
+    [zip replaceBytesInRange:NSMakeRange(eocd+8,2) withBytes:marker]; [zip replaceBytesInRange:NSMakeRange(eocd+10,2) withBytes:marker];
+    NSString *p=[self writeZip:zip]; NSError *e=nil; NSDictionary *r=[LBTendiesValidator validateArchiveAtPath:p extractToPath:nil error:&e];
+    XCTAssertNotNil(e); XCTAssertEqualObjects(r[@"status"],@"unsupported"); [[NSFileManager defaultManager]removeItemAtPath:p error:nil];
+}
+- (void)testRejectsMultiDiskZIP {
+    NSMutableData *zip=[StoredZip(@[@{@"name":@"descriptors/a",@"data":[NSData data]}],NO) mutableCopy];
+    NSUInteger eocd=FindZIPSignature(zip,0x06054b50); uint8_t disk[2]={1,0}; [zip replaceBytesInRange:NSMakeRange(eocd+4,2) withBytes:disk];
+    NSString *p=[self writeZip:zip]; NSError *e=nil; NSDictionary *r=[LBTendiesValidator validateArchiveAtPath:p extractToPath:nil error:&e];
+    XCTAssertNotNil(e); XCTAssertEqualObjects(r[@"status"],@"unsupported"); [[NSFileManager defaultManager]removeItemAtPath:p error:nil];
+}
+- (void)testRejectsUnicodeNFCNFDPathCollision {
+    NSData *empty=[NSData data]; NSString *nfc=@"descriptors/caf\u00e9"; NSString *nfd=@"descriptors/cafe\u0301";
+    NSString *p=[self writeZip:StoredZip(@[@{@"name":nfc,@"data":empty},@{@"name":nfd,@"data":empty}],NO)];
+    NSError *e=nil; NSDictionary *r=[LBTendiesValidator validateArchiveAtPath:p extractToPath:nil error:&e];
+    XCTAssertNotNil(e); XCTAssertEqualObjects(r[@"status"],@"invalid"); [[NSFileManager defaultManager]removeItemAtPath:p error:nil];
+}
+- (void)testRejectsCaseInsensitivePathCollision {
+    NSData *empty=[NSData data]; NSString *p=[self writeZip:StoredZip(@[@{@"name":@"descriptors/Asset",@"data":empty},@{@"name":@"descriptors/asset",@"data":empty}],NO)];
+    NSError *e=nil; NSDictionary *r=[LBTendiesValidator validateArchiveAtPath:p extractToPath:nil error:&e];
+    XCTAssertNotNil(e); XCTAssertEqualObjects(r[@"status"],@"invalid"); [[NSFileManager defaultManager]removeItemAtPath:p error:nil];
+}
+- (void)testRejectsMalformedWallpaperPlist {
+    NSString *p=[self writeZip:StoredZip(@[@{@"name":@"descriptors/fixture/Wallpaper.plist",@"data":[@"<plist><bad>" dataUsingEncoding:NSUTF8StringEncoding]}],NO)];
+    NSError *e=nil; NSDictionary *r=[LBTendiesValidator validateArchiveAtPath:p extractToPath:nil error:&e];
+    XCTAssertNotNil(e); XCTAssertEqualObjects(r[@"status"],@"invalid"); [[NSFileManager defaultManager]removeItemAtPath:p error:nil];
+}
+- (void)testRejectsFalseDeclaredUncompressedSize {
+    NSMutableData *zip=[StoredZip(@[@{@"name":@"descriptors/a",@"data":[@"abc" dataUsingEncoding:NSUTF8StringEncoding]}],NO) mutableCopy];
+    uint8_t four[4]={4,0,0,0}; [zip replaceBytesInRange:NSMakeRange(22,4) withBytes:four];
+    NSUInteger cd=FindZIPSignature(zip,0x02014b50); [zip replaceBytesInRange:NSMakeRange(cd+24,4) withBytes:four];
+    NSString *p=[self writeZip:zip]; NSError *e=nil; NSDictionary *r=[LBTendiesValidator validateArchiveAtPath:p extractToPath:nil error:&e];
+    XCTAssertNotNil(e); XCTAssertNotEqualObjects(r[@"status"],@"valid"); [[NSFileManager defaultManager]removeItemAtPath:p error:nil];
+}
+- (void)testRejectsExcessiveCompressionRatioDeclaration {
+    NSMutableData *zip=[StoredZip(@[@{@"name":@"descriptors/a",@"data":[@"x" dataUsingEncoding:NSUTF8StringEncoding]}],NO) mutableCopy];
+    uint8_t size[4]={0xf5,0x01,0,0}; [zip replaceBytesInRange:NSMakeRange(22,4) withBytes:size];
+    NSUInteger cd=FindZIPSignature(zip,0x02014b50); [zip replaceBytesInRange:NSMakeRange(cd+24,4) withBytes:size];
+    NSString *p=[self writeZip:zip]; NSError *e=nil; NSDictionary *r=[LBTendiesValidator validateArchiveAtPath:p extractToPath:nil error:&e];
+    XCTAssertNotNil(e); XCTAssertEqualObjects(r[@"status"],@"invalid"); [[NSFileManager defaultManager]removeItemAtPath:p error:nil];
+}
+- (void)testValidationIsRepeatableAndPreservesSource {
+    NSDictionary *wp=@{@"identifier":@1,@"name":@"Synthetic",@"assets":@{}};
+    NSData *plist=[NSPropertyListSerialization dataWithPropertyList:wp format:NSPropertyListXMLFormat_v1_0 options:0 error:nil];
+    NSString *p=[self writeZip:StoredZip(@[@{@"name":@"descriptors/fixture/Wallpaper.plist",@"data":plist}],NO)];
+    NSError *e1=nil,*e2=nil; NSDictionary *a=[LBTendiesValidator validateArchiveAtPath:p extractToPath:nil error:&e1];
+    NSDictionary *b=[LBTendiesValidator validateArchiveAtPath:p extractToPath:nil error:&e2];
+    XCTAssertNil(e1); XCTAssertNil(e2); XCTAssertEqualObjects(a[@"status"],@"valid"); XCTAssertEqualObjects(b[@"status"],@"valid");
+    XCTAssertTrue([[NSFileManager defaultManager]fileExistsAtPath:p]); [[NSFileManager defaultManager]removeItemAtPath:p error:nil];
+}
+- (void)testReportsExtractionRootCreationFailure {
+    NSDictionary *wp=@{@"identifier":@1,@"name":@"Synthetic",@"assets":@{}};
+    NSData *plist=[NSPropertyListSerialization dataWithPropertyList:wp format:NSPropertyListXMLFormat_v1_0 options:0 error:nil];
+    NSString *p=[self writeZip:StoredZip(@[@{@"name":@"descriptors/fixture/Wallpaper.plist",@"data":plist}],NO)];
+    NSString *out=[[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString] stringByAppendingPathComponent:@"missing-root"];
+    NSError *e=nil; NSDictionary *r=[LBTendiesValidator validateArchiveAtPath:p extractToPath:out error:&e];
+    XCTAssertNotNil(e); XCTAssertEqualObjects(r[@"status"],@"incomplete"); [[NSFileManager defaultManager]removeItemAtPath:p error:nil];
+}
+
 @end
