@@ -119,14 +119,14 @@ static NSData *LBTProcessMember(const uint8_t *input, NSUInteger inputLength, NS
             if(extraID==0x0001){if(error)*error=LBTMakeError(72,@"ZIP64 extra field unsupported");return @{@"status":@"unsupported",@"errors":@[@"ZIP64 extra field"]};}
             extraCursor+=extraLength;
         }
-        if(diskStart==0xffff||cs==0xffffffff||us==0xffffffff||local==0xffffffff){if(error)*error=LBTMakeError(8,@"ZIP64 entry unsupported");return @{@"status":@"unsupported",@"errors":@[@"ZIP64 entry"]};}
+        if(diskStart!=0||cs==0xffffffff||us==0xffffffff||local==0xffffffff){if(error)*error=LBTMakeError(8,@"ZIP64 entry unsupported");return @{@"status":@"unsupported",@"errors":@[@"ZIP64 entry"]};}
         NSString *name=[[NSString alloc]initWithBytes:h+46 length:nl encoding:NSUTF8StringEncoding]; if(!name){if(error)*error=LBTMakeError(9,@"Invalid UTF-8 entry name");return @{@"status":@"invalid",@"errors":@[@"Invalid filename encoding"]};}
         BOOL dir=[name hasSuffix:@"/"]; NSString *key=nil; if(!LBTNormalizePath(name,dir,&key,error))return @{@"status":@"invalid",@"errors":@[@"Unsafe archive path"]};
         if([keys containsObject:key]){if(error)*error=LBTMakeError(13,@"Duplicate, Unicode or case-folded path collision");return @{@"status":@"invalid",@"errors":@[@"Duplicate path"]};}
         for(NSString *prior in keys) if(([prior hasPrefix:[key stringByAppendingString:@"/"]]&&!dir)||([key hasPrefix:[prior stringByAppendingString:@"/"]] )){if(error)*error=LBTMakeError(14,@"File/directory path collision");return @{@"status":@"invalid",@"errors":@[@"Path collision"]};}
         [keys addObject:key]; uint32_t mode=(ext>>16)&0xffff,kind=mode&0170000;
         if(kind==0120000||(kind&&kind!=0100000&&kind!=0040000)){if(error)*error=LBTMakeError(15,@"Symlink or special entry rejected");return @{@"status":@"invalid",@"errors":@[@"Symlink or special entry"]};}
-        if(flags&1){if(error)*error=LBTMakeError(16,@"Encrypted entries unsupported");return @{@"status":@"unsupported",@"errors":@[@"Encrypted archive"]};}
+        if(flags&(1|0x40|0x2000)){if(error)*error=LBTMakeError(16,@"Encrypted entries unsupported");return @{@"status":@"unsupported",@"errors":@[@"Encrypted archive"]};}
         if(method!=0&&method!=8){if(error)*error=LBTMakeError(17,@"Unsupported compression method");return @{@"status":@"unsupported",@"errors":@[@"Unsupported compression"]};}
         if(us>LBTMaxFile||total+us>LBTMaxTotal||(us>0&&(cs==0||(uint64_t)us>(uint64_t)cs*500))){if(error)*error=LBTMakeError(18,@"ZIP bomb/resource bound exceeded");return @{@"status":@"invalid",@"errors":@[@"Decompression limit exceeded"]};}
         total+=us; NSArray *components=[name.lowercaseString componentsSeparatedByString:@"/"]; if([components containsObject:@"container"])container=YES;
@@ -146,6 +146,14 @@ static NSData *LBTProcessMember(const uint8_t *input, NSUInteger inputLength, NS
         if(localFlags!=e.flags||localMethod!=e.method||!LBTRange(data,e.compressed,n)||data+e.compressed>cdOffset){if(error)*error=LBTMakeError(28,@"Local and central ZIP headers disagree");return @{@"status":@"invalid",@"errors":@[@"Header mismatch or truncated member"]};}
         NSString *localName=[[NSString alloc]initWithBytes:b+p+30 length:ln encoding:NSUTF8StringEncoding];
         if(![localName isEqualToString:e.name]){if(error)*error=LBTMakeError(29,@"Local and central entry names disagree");return @{@"status":@"invalid",@"errors":@[@"Filename mismatch"]};}
+        const uint8_t *localExtra=b+p+30+ln; NSUInteger localExtraCursor=0;
+        while(localExtraCursor<le){
+            if(!LBTRange(localExtraCursor,4,le)){if(error)*error=LBTMakeError(83,@"Malformed local ZIP extra field");return @{@"status":@"invalid",@"errors":@[@"Malformed local extra field"]};}
+            uint16_t extraID=LBTU16(localExtra+localExtraCursor),extraLength=LBTU16(localExtra+localExtraCursor+2);localExtraCursor+=4;
+            if(!LBTRange(localExtraCursor,extraLength,le)){if(error)*error=LBTMakeError(84,@"Truncated local ZIP extra field");return @{@"status":@"invalid",@"errors":@[@"Truncated local extra field"]};}
+            if(extraID==0x0001){if(error)*error=LBTMakeError(85,@"Local ZIP64 extra field unsupported");return @{@"status":@"unsupported",@"errors":@[@"Local ZIP64 extra field"]};}
+            localExtraCursor+=extraLength;
+        }
         uint32_t localCRC=LBTU32(b+p+14),localCS=LBTU32(b+p+18),localUS=LBTU32(b+p+22);
         if(e.flags&8){
             if((localCRC&&localCRC!=e.crc)||(localCS&&localCS!=e.compressed)||(localUS&&localUS!=e.uncompressed)){if(error)*error=LBTMakeError(74,@"Non-zero local sizes disagree with data descriptor");return @{@"status":@"invalid",@"errors":@[@"Local descriptor fields mismatch"]};}
