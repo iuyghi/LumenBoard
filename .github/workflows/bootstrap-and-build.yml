@@ -297,7 +297,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential fakeroot rsync curl perl zip git libxml2 libtinfo6 libio-compress-lzma-perl ca-certificates python3 dpkg-dev file xz-utils
+          sudo apt-get install -y --no-install-recommends build-essential fakeroot rsync curl perl zip git libxml2 libtinfo6 libio-compress-lzma-perl libplist-utils libplist-2.0-4 ca-certificates python3 dpkg-dev file xz-utils
           CI=true bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)" 2>&1 | tee "$RUNNER_TEMP/lumenboard-audit/theos-install.log"
           export THEOS="$HOME/theos"
           test -f "$THEOS/makefiles/common.mk"
