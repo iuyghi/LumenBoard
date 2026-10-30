@@ -311,7 +311,7 @@ jobs:
           [[ "$DEPENDS" == *"firmware (<< 17.0)"* ]]
           [[ "$DEPENDS" == *"preferenceloader"* ]]
           dpkg-deb --contents "$DEB" | tee "$RUNNER_TEMP/lumenboard-audit/dpkg-deb-contents.txt"
-          if dpkg-deb --contents "$DEB" | awk '{print $NF}' | grep -Ev '^\./var/jb(/|$)' | grep -q .; then
+          if dpkg-deb --contents "$DEB" | awk '{print $NF}' | grep -Ev '^(\./?$|\./var/?$|\./var/jb(/|$))' | grep -q .; then
             echo "FAIL: package contains paths outside rootless /var/jb prefix" >&2
             exit 1
           fi
