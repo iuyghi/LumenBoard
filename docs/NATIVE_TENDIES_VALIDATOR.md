@@ -6,7 +6,7 @@ The Preferences bundle now compiles `LBTendiesValidator.m` into the app and link
 
 - Single-disk classic ZIP only; ZIP64 and multi-disk archives are reported as unsupported.
 - Stored and raw-DEFLATE members only.
-- Limits: 300 MiB archive, 2,048 entries, 128 MiB/member, 512 MiB aggregate uncompressed, 500:1 compression ratio, 8 MiB plist.
+- Limits: 300 MiB archive, 2,048 entries, 64 MiB/member, 128 MiB aggregate uncompressed, 500:1 compression ratio, 8 MiB plist.
 - Validates central-directory records, local headers and filenames, CRC32, path traversal/absolute paths, duplicate and Unicode/case-folded names, Unix symlinks/special file modes, encryption flags, compression methods and plist syntax.
 - Requires a descriptor/descriptors path and at least one Wallpaper.plist dictionary with identifier, name and assets fields.
 - Container-format archives are refused.
