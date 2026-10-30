@@ -275,7 +275,7 @@ static NSDictionary *LBReadManagedManifest(NSString *entry) {
                                 validation = [LBTendiesValidator validateArchiveAtPath:destination
                                     extractToPath:extractionPath error:&validationError];
                             } else {
-                                validation = @{@@"status": @"incomplete", @@"errors": @[@"Could not persist pending-validation manifest"]};
+                                validation = @{@"status": @"incomplete", @"errors": @[@"Could not persist pending-validation manifest"]};
                             }
                             NSMutableDictionary *validationReport = [validation mutableCopy] ?: [NSMutableDictionary dictionary];
                             NSString *validationStatus = [validationReport[@"status"] isKindOfClass:NSString.class] ? validationReport[@"status"] : @"incomplete";
