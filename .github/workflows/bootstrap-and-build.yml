@@ -24,7 +24,28 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Detect whether verified source import is already present
+        id: source-state
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_COMMIT="5c9bfd516d93243d3bd7625839b39e0e68f6c9fb"
+          BUNDLE_SHA="3c35135f43dc91ef92edd0e6b34df8e741656389ef4d5a4b74a32d6d38c272b1"
+          ZIP_SHA="bab4191bffc8d458b4d94d94852d0c04e4271c060437e0bf268fae760df35962"
+          if git cat-file -e "$SOURCE_COMMIT^{commit}" 2>/dev/null && git merge-base --is-ancestor "$SOURCE_COMMIT" HEAD; then
+            test -s provenance/SOURCE_PROVENANCE.md
+            grep -Fq "$BUNDLE_SHA" provenance/SOURCE_PROVENANCE.md
+            grep -Fq "$ZIP_SHA" provenance/SOURCE_PROVENANCE.md
+            grep -Fq "$SOURCE_COMMIT" provenance/SOURCE_PROVENANCE.md
+            echo "already_imported=true" >> "$GITHUB_OUTPUT"
+            echo "PASS: original source commit is already reachable from HEAD and provenance checksums match."
+          else
+            echo "already_imported=false" >> "$GITHUB_OUTPUT"
+            echo "Original source history not yet imported; the verified bundle reconstruction and import steps will run."
+          fi
+
       - name: Verify explicit segment manifest and reconstruct original bundle
+        if: ${{ steps.source-state.outputs.already_imported != 'true' }}
         id: bundle
         shell: bash
         run: |
@@ -90,6 +111,7 @@ jobs:
           echo "manifest_sha256=$(sha256sum provenance/transfer-recovery/MANIFEST.tsv | awk '{print $1}')" >> "$GITHUB_OUTPUT"
 
       - name: Verify Git bundle, refs, commit and object database
+        if: ${{ steps.source-state.outputs.already_imported != 'true' }}
         id: git-verify
         shell: bash
         run: |
@@ -117,6 +139,7 @@ jobs:
           echo "PASS: bundle refs, exact source HEAD, object database and clean checkout verified"
 
       - name: Import original history with non-force merge
+        if: ${{ steps.source-state.outputs.already_imported != 'true' }}
         id: import
         shell: bash
         run: |
@@ -148,6 +171,7 @@ jobs:
           echo "PASS: source commit and previous main are both reachable; normal non-force push confirmed"
 
       - name: Remove temporary transfer files after verified import and write provenance
+        if: ${{ steps.source-state.outputs.already_imported != 'true' }}
         id: provenance
         shell: bash
         env:
