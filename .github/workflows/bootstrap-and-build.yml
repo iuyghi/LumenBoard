@@ -4,7 +4,15 @@ on:
   push:
     branches: [main]
     paths:
-      - ".github/workflows/bootstrap-and-build.yml"
+      - ".github/workflows/**"
+      - "Makefile"
+      - "control"
+      - "Preferences/**"
+      - "Shared/**"
+      - "Daemon/**"
+      - "layout/**"
+      - "tools/**"
+      - "tests/**"
   workflow_dispatch:
 
 permissions:
