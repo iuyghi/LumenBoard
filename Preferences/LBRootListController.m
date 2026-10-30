@@ -69,7 +69,8 @@ static NSDictionary *LBReadManagedManifest(NSString *entry) {
         if (manifest) {
             NSString *folder = [LBLibraryPath() stringByAppendingPathComponent:entry];
             NSString *name = [manifest[@"originalName"] isKindOfClass:NSString.class] ? manifest[@"originalName"] : entry;
-            [items addObject:@{@"folder": folder, @"identifier": manifest[@"identifier"], @"name": name, @"status": manifest[@"status"] ?: @"unknown"}];
+            NSString *status = [manifest[@"status"] isKindOfClass:NSString.class] ? manifest[@"status"] : @"unknown";
+            [items addObject:@{@"folder": folder, @"identifier": manifest[@"identifier"], @"name": name, @"status": status}];
         }
     }
     if (items.count == 0) {
@@ -78,7 +79,7 @@ static NSDictionary *LBReadManagedManifest(NSString *entry) {
     }
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Manage local items" message:@"Select an item to remove it from LumenBoard's local library. This does not change PosterBoard." preferredStyle:UIAlertControllerStyleActionSheet];
     for (NSDictionary *item in items) {
-        NSString *label = [NSString stringWithFormat:@"Remove: %@", item[@"name"]];
+        NSString *label = [NSString stringWithFormat:@"%@ — %@", item[@"name"], item[@"status"]];
         [sheet addAction:[UIAlertAction actionWithTitle:label style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) {
             NSError *removeError = nil;
             NSString *folder = item[@"folder"];
@@ -188,6 +189,7 @@ static NSDictionary *LBReadManagedManifest(NSString *entry) {
     NSURL *sourceURL = [url copy];
     NSString *sourceExtension = [forcedExtension copy];
     NSString *sourceType = [type copy];
+    __block NSString *finalImportStatus = nil;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         BOOL access = sourceURL.isFileURL && [sourceURL startAccessingSecurityScopedResource];
         NSError *error = nil;
@@ -248,11 +250,14 @@ static NSDictionary *LBReadManagedManifest(NSString *entry) {
                             manifest[@"validationReport"] = validation ?: @{};
                             manifest[@"status"] = validation[@"status"] ?: @"incomplete";
                             if (validationError) manifest[@"validationError"] = validationError.localizedDescription;
+                            if (!finalImportStatus) finalImportStatus = manifest[@"status"];
                             if ([manifest[@"status"] isEqualToString:@"extracted"]) {
                                 manifest[@"status"] = @"extracted";
                                 manifest[@"extractionPath"] = @"Extracted";
+                                finalImportStatus = @"extracted";
                             } else if ([manifest[@"status"] isEqualToString:@"valid"]) {
                                 manifest[@"status"] = @"extraction-ready";
+                                finalImportStatus = @"extraction-ready";
                             }
                         }
                         NSData *data = [NSPropertyListSerialization dataWithPropertyList:manifest
@@ -281,7 +286,7 @@ static NSDictionary *LBReadManagedManifest(NSString *entry) {
         if (ok && [sourceType isEqualToString:@"tendies-unvalidated"]) {
             NSString *manifestPath = [[LBLibraryPath() stringByAppendingPathComponent:([[NSFileManager.defaultManager contentsOfDirectoryAtPath:LBLibraryPath() error:nil] lastObject] ?: @"")] stringByAppendingPathComponent:LBManifestName];
             (void)manifestPath;
-            message = @"The .tendies archive was processed. Check its validation state in the local library; PosterBoard compatibility and installation remain disabled.";
+            message = [NSString stringWithFormat:@".tendies result: %@. Structural validation does not prove PosterBoard compatibility. Native installation remains disabled.", finalImportStatus ?: @"incomplete"];
         }
         dispatch_async(dispatch_get_main_queue(), ^{
             [self showMessage:title message:message];
