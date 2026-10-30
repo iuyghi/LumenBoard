@@ -25,17 +25,60 @@ static BOOL LBTNormalizePath(NSString *raw, BOOL dir, NSString **key, NSError **
     if(key)*key=[[parts componentsJoinedByString:@"/"] precomposedStringWithCanonicalMapping].lowercaseString;
     return YES;
 }
-static NSData *LBTDecode(NSData *input, NSUInteger expected, uint16_t method, NSError **error) {
-    if(expected>LBTMaxFile){if(error)*error=LBTMakeError(20,@"Member exceeds size limit");return nil;}
-    if(method==0){if(input.length!=expected){if(error)*error=LBTMakeError(21,@"Stored member size mismatch");return nil;}return input;}
-    if(method!=8){if(error)*error=LBTMakeError(22,@"Unsupported compression method");return nil;}
-    NSMutableData *out=[NSMutableData dataWithLength:MAX((NSUInteger)1,expected)];
-    z_stream z={0}; z.next_in=(Bytef *)input.bytes; z.avail_in=(uInt)input.length; z.next_out=out.mutableBytes; z.avail_out=(uInt)out.length;
-    if(inflateInit2(&z,-MAX_WBITS)!=Z_OK){if(error)*error=LBTMakeError(23,@"Cannot initialize DEFLATE");return nil;}
-    int rc=inflate(&z,Z_FINISH); NSUInteger produced=z.total_out; uInt remaining=z.avail_in; inflateEnd(&z);
-    if(rc!=Z_STREAM_END||produced!=expected||remaining!=0){if(error)*error=LBTMakeError(24,@"Invalid or truncated DEFLATE stream");return nil;}
-    out.length=produced; return out;
+static BOOL LBTEmitChunk(const uint8_t *bytes, NSUInteger length, uLong *crc, uint64_t *produced, NSMutableData *capture, int outputFD, NSError **error) {
+    if(length > LBTMaxFile - *produced){if(error)*error=LBTMakeError(81,@"Decompressed output exceeds member limit");return NO;}
+    *crc=crc32(*crc,bytes,(uInt)length);
+    *produced+=length;
+    if(capture){
+        if(length > LBTMaxPlist-capture.length){if(error)*error=LBTMakeError(82,@"Plist exceeds capture limit");return NO;}
+        [capture appendBytes:bytes length:length];
+    }
+    if(outputFD>=0){
+        NSUInteger offset=0;
+        while(offset<length){
+            ssize_t wrote=write(outputFD,bytes+offset,length-offset);
+            if(wrote<0&&errno==EINTR)continue;
+            if(wrote<=0){if(error)*error=[NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:nil];return NO;}
+            offset+=(NSUInteger)wrote;
+        }
+    }
+    return YES;
 }
+static NSData *LBTProcessMember(const uint8_t *input, NSUInteger inputLength, NSUInteger expected, uint16_t method, uint32_t expectedCRC, int outputFD, BOOL capture, NSError **error) {
+    if(expected>LBTMaxFile||inputLength>UINT_MAX){if(error)*error=LBTMakeError(20,@"Member exceeds supported bounds");return nil;}
+    NSMutableData *captured=capture?[NSMutableData dataWithCapacity:MIN(expected,(NSUInteger)LBTMaxPlist)]:nil;
+    uint8_t output[64*1024]; uint64_t produced=0; uLong crc=crc32(0L,Z_NULL,0);
+    if(method==0){
+        if(inputLength!=expected){if(error)*error=LBTMakeError(21,@"Stored member size mismatch");return nil;}
+        NSUInteger offset=0;
+        while(offset<inputLength){
+            NSUInteger chunk=MIN(sizeof(output),inputLength-offset);
+            memcpy(output,input+offset,chunk);
+            if(!LBTEmitChunk(output,chunk,&crc,&produced,captured,outputFD,error))return nil;
+            offset+=chunk;
+        }
+    }else if(method==8){
+        z_stream z={0};
+        if(inflateInit2(&z,-MAX_WBITS)!=Z_OK){if(error)*error=LBTMakeError(23,@"Cannot initialize DEFLATE");return nil;}
+        z.next_in=(Bytef *)input; z.avail_in=(uInt)inputLength;
+        int rc=Z_OK; BOOL ok=YES;
+        while(rc!=Z_STREAM_END){
+            z.next_out=output; z.avail_out=(uInt)sizeof(output);
+            uLong beforeIn=z.total_in,beforeOut=z.total_out;
+            rc=inflate(&z,Z_NO_FLUSH);
+            NSUInteger chunk=sizeof(output)-z.avail_out;
+            if(chunk&&!LBTEmitChunk(output,chunk,&crc,&produced,captured,outputFD,error)){ok=NO;break;}
+            if(rc!=Z_OK&&rc!=Z_STREAM_END){if(error)*error=LBTMakeError(24,@"Invalid or truncated DEFLATE stream");ok=NO;break;}
+            if(rc!=Z_STREAM_END&&z.total_in==beforeIn&&z.total_out==beforeOut){if(error)*error=LBTMakeError(24,@"DEFLATE stream made no progress");ok=NO;break;}
+        }
+        BOOL complete=ok&&rc==Z_STREAM_END&&z.total_in==inputLength&&produced==expected;
+        inflateEnd(&z);
+        if(!complete){if(error&&!*error)*error=LBTMakeError(24,@"DEFLATE size or input length mismatch");return nil;}
+    }else{if(error)*error=LBTMakeError(22,@"Unsupported compression method");return nil;}
+    if(produced!=expected||(uint32_t)crc!=expectedCRC){if(error)*error=LBTMakeError(30,@"CRC or uncompressed size mismatch");return nil;}
+    return captured?:[NSData data];
+}
+
 @interface LBTEntry:NSObject
 @property(nonatomic,copy) NSString *name,*key;
 @property(nonatomic) uint16_t flags,method;
@@ -90,7 +133,6 @@ static NSData *LBTDecode(NSData *input, NSUInteger expected, uint16_t method, NS
     if(cursor!=cdOffset+cdSize){if(error)*error=LBTMakeError(19,@"Central directory size mismatch");return @{@"status":@"invalid",@"errors":@[@"Central directory mismatch"]};}
     if(container){if(error)*error=LBTMakeError(25,@"Whole-container archives are unsupported");return @{@"status":@"unsupported",@"errors":@[@"Container-format archive"]};}
     if(!descriptor){if(error)*error=LBTMakeError(26,@"Descriptor directory not found");return @{@"status":@"incomplete",@"errors":@[@"Descriptor directory missing"]};}
-    NSMutableDictionary<NSString *,NSData *> *contents=[NSMutableDictionary dictionary];
     NSMutableArray *plists=[NSMutableArray array],*wallpapers=[NSMutableArray array],*occupiedRanges=[NSMutableArray array];
     for(LBTEntry *e in entries){
         NSUInteger p=e.localOffset;
@@ -119,11 +161,11 @@ static NSData *LBTDecode(NSData *input, NSUInteger expected, uint16_t method, NS
         e.localHeaderSize=30+(uint64_t)ln+le;e.dataOffset=data;e.descriptorSize=descriptorSize;e.recordEnd=recordEnd;
         [occupiedRanges addObject:[NSValue valueWithRange:NSMakeRange(p,recordEnd-p)]];
         if(e.directory){if(e.compressed||e.uncompressed){if(error)*error=LBTMakeError(79,@"Directory entry contains file data");return @{@"status":@"invalid",@"errors":@[@"Non-empty directory entry"]};}continue;}
-        NSData *packed=[zip subdataWithRange:NSMakeRange(data,e.compressed)]; NSError *decodeError=nil; NSData *plain=LBTDecode(packed,e.uncompressed,e.method,&decodeError);
-        if(!plain){if(error)*error=decodeError;return @{@"status":@"invalid",@"errors":@[decodeError.localizedDescription]};}
-        uLong crcValue=crc32(0L,Z_NULL,0);crcValue=crc32(crcValue,plain.bytes,(uInt)plain.length);
-        if((uint32_t)crcValue!=e.crc){if(error)*error=LBTMakeError(30,@"CRC mismatch");return @{@"status":@"invalid",@"errors":@[@"CRC mismatch"]};}
-        if([e.name.pathExtension.lowercaseString isEqualToString:@"plist"]){
+        BOOL isPlist=[e.name.pathExtension.lowercaseString isEqualToString:@"plist"];
+        NSError *decodeError=nil;
+        NSData *plain=LBTProcessMember(b+data,e.compressed,e.uncompressed,e.method,e.crc,-1,isPlist,&decodeError);
+        if(!plain){if(error)*error=decodeError;return @{@"status":@"invalid",@"errors":@[decodeError.localizedDescription?:@"Member validation failed"]};}
+        if(isPlist){
             if(plain.length>LBTMaxPlist){if(error)*error=LBTMakeError(31,@"Plist too large");return @{@"status":@"invalid",@"errors":@[@"Oversized plist"]};}
             NSError *pe=nil; id object=[NSPropertyListSerialization propertyListWithData:plain options:NSPropertyListImmutable format:nil error:&pe];
             if(!object){if(error)*error=LBTMakeError(32,[NSString stringWithFormat:@"Malformed plist %@: %@",e.name,pe.localizedDescription]);return @{@"status":@"invalid",@"errors":@[@"Malformed plist"]};}
@@ -133,7 +175,6 @@ static NSData *LBTDecode(NSData *input, NSUInteger expected, uint16_t method, NS
                 [wallpapers addObject:e.name];
             }
         }
-        contents[e.name]=plain;
     }
     [occupiedRanges sortUsingComparator:^NSComparisonResult(NSValue *a, NSValue *b) {
         NSRange ra=a.rangeValue,rb=b.rangeValue;
@@ -158,14 +199,22 @@ static NSData *LBTDecode(NSData *input, NSUInteger expected, uint16_t method, NS
             if(e.directory){if(![[NSFileManager defaultManager] createDirectoryAtPath:target withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:&extractError]){success=NO;break;}continue;}
             NSString *parent=target.stringByDeletingLastPathComponent;
             if(![[NSFileManager defaultManager] createDirectoryAtPath:parent withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:&extractError]){success=NO;break;}
-            int fd=open(target.fileSystemRepresentation,O_WRONLY|O_CREAT|O_EXCL
+            NSString *temporary=[parent stringByAppendingPathComponent:[NSString stringWithFormat:@".%@.lumenboard-%@",target.lastPathComponent,NSUUID.UUID.UUIDString]];
+            int fd=open(temporary.fileSystemRepresentation,O_WRONLY|O_CREAT|O_EXCL
 #ifdef O_NOFOLLOW
                 |O_NOFOLLOW
 #endif
                 ,0600);
             if(fd<0){extractError=[NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:nil];success=NO;break;}
-            NSData *data=contents[e.name]; ssize_t wrote=write(fd,data.bytes,data.length); if(wrote!=(ssize_t)data.length||fsync(fd)!=0)success=NO; close(fd);
-            if(!success){extractError=[NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:nil];break;}
+            NSError *streamError=nil;
+            NSData *ignored=LBTProcessMember(b+e.dataOffset,e.compressed,e.uncompressed,e.method,e.crc,fd,NO,&streamError);
+            BOOL flushed=(ignored!=nil)&&fsync(fd)==0;
+            close(fd);
+            if(!flushed||link(temporary.fileSystemRepresentation,target.fileSystemRepresentation)!=0){
+                extractError=streamError?:[NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:nil];
+                unlink(temporary.fileSystemRepresentation);success=NO;break;
+            }
+            unlink(temporary.fileSystemRepresentation);
         }
         if(!success){[[NSFileManager defaultManager] removeItemAtPath:destination error:nil];if(error)*error=extractError;return @{@"status":@"incomplete",@"errors":@[extractError.localizedDescription?:@"Extraction failed"]};}
         report[@"status"]=@"extracted";report[@"extractedPath"]=destination;
