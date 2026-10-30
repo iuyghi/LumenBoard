@@ -28,13 +28,13 @@ For `.tendies` imports, the source is copied into a UUID-named private library d
 
 ## Native tests and CI
 
-`Tests/Native/LBTendiesValidatorTests.m` contains XCTest fixture-based cases. `project.yml` generates a macOS XCTest project using XcodeGen. `.github/workflows/native-validator.yml` defines:
+`Tests/Native/LBTendiesValidatorTests.m` now contains 27 XCTest methods using synthetic ZIP fixtures. Added cases cover signed/unsigned data descriptors, local and central header disagreement, out-of-range local offsets, ZIP64 and multi-disk markers, NFC/NFD and case-folded path collisions, malformed Wallpaper.plist, false uncompressed sizes, compression-ratio limits, repeat validation and extraction-root creation failure. The project spec pins the generated project format to Xcode 15 (`xcode15_0`) to avoid XcodeGen 2.46's newer default format. The Theos workflow explicitly selects `dpkg-deb` through `_THEOS_PLATFORM_DPKG_DEB`. `.github/workflows/native-validator.yml` defines:
 - macOS XCTest execution;
 - Theos setup using the Xcode-provided iPhoneOS SDK;
 - rootless package build and package metadata/content/architecture checks;
 - SHA-256 and artifact upload.
 
-The workflow configuration is committed, but its execution result must be checked in GitHub Actions. Creation of the workflow is not evidence that the test suite or package build passed. The current test source covers a subset of the full P27 matrix; ZIP64, multi-disk, signed/unsigned descriptor fixtures, overlap, bomb, simulated write failure, interruption/recovery, manifest concurrency and restart recovery are not all covered.
+The workflow configuration is committed, but the current execution attempts after these CI fixes have failed before runner allocation: GitHub reports runner ID 0, zero steps and no retrievable job logs. Therefore none of the 27 XCTest methods has yet been executed against the updated source, and no current Theos build result exists. The test source still does not cover all requested cases: overlapping local records, central-directory intrusion, integer overflow, true decompression-bomb streaming, write failure after partial output, interrupted extraction, extraction-time CRC failure, and manifest restart/concurrency recovery remain untested.
 
 ## Descriptor semantics and compatibility
 
