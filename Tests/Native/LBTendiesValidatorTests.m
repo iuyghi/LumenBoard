@@ -29,7 +29,7 @@ static NSData *StoredZip(NSArray<NSDictionary *> *items, BOOL corruptCRC) {
 static NSUInteger FindZIPSignature(NSData *data, uint32_t signature) {
     const uint8_t *b=data.bytes;
     for(NSUInteger i=0;i+4<=data.length;i++)
-        if((uint32_t)b[i]|((uint32_t)b[i+1]<<8)|((uint32_t)b[i+2]<<16)|((uint32_t)b[i+3]<<24) == signature) return i;
+        if(((uint32_t)b[i]|((uint32_t)b[i+1]<<8)|((uint32_t)b[i+2]<<16)|((uint32_t)b[i+3]<<24)) == signature) return i;
     return NSNotFound;
 }
 static NSData *StoredZipWithDescriptor(NSString *entryName, NSData *payload, BOOL signature) {
