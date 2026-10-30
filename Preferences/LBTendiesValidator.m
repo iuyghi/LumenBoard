@@ -64,6 +64,14 @@ static NSData *LBTDecode(NSData *input, NSUInteger expected, uint16_t method, NS
         const uint8_t *h=b+cursor; uint16_t flags=LBTU16(h+8),method=LBTU16(h+10),nl=LBTU16(h+28),xl=LBTU16(h+30),cl=LBTU16(h+32),diskStart=LBTU16(h+34);
         uint32_t crc=LBTU32(h+16),cs=LBTU32(h+20),us=LBTU32(h+24),ext=LBTU32(h+38),local=LBTU32(h+42); NSUInteger record=46+(NSUInteger)nl+xl+cl;
         if(!LBTRange(cursor,record,n)){if(error)*error=LBTMakeError(7,@"Truncated central directory");return @{@"status":@"invalid",@"errors":@[@"Truncated central directory"]};}
+        const uint8_t *extraBytes=h+46+nl; NSUInteger extraCursor=0;
+        while(extraCursor<xl){
+            if(!LBTRange(extraCursor,4,xl)){if(error)*error=LBTMakeError(70,@"Malformed ZIP extra field");return @{@"status":@"invalid",@"errors":@[@"Malformed ZIP extra field"]};}
+            uint16_t extraID=LBTU16(extraBytes+extraCursor),extraLength=LBTU16(extraBytes+extraCursor+2); extraCursor+=4;
+            if(!LBTRange(extraCursor,extraLength,xl)){if(error)*error=LBTMakeError(71,@"Truncated ZIP extra field");return @{@"status":@"invalid",@"errors":@[@"Truncated ZIP extra field"]};}
+            if(extraID==0x0001){if(error)*error=LBTMakeError(72,@"ZIP64 extra field unsupported");return @{@"status":@"unsupported",@"errors":@[@"ZIP64 extra field"]};}
+            extraCursor+=extraLength;
+        }
         if(diskStart==0xffff||cs==0xffffffff||us==0xffffffff||local==0xffffffff){if(error)*error=LBTMakeError(8,@"ZIP64 entry unsupported");return @{@"status":@"unsupported",@"errors":@[@"ZIP64 entry"]};}
         NSString *name=[[NSString alloc]initWithBytes:h+46 length:nl encoding:NSUTF8StringEncoding]; if(!name){if(error)*error=LBTMakeError(9,@"Invalid UTF-8 entry name");return @{@"status":@"invalid",@"errors":@[@"Invalid filename encoding"]};}
         BOOL dir=[name hasSuffix:@"/"]; NSString *key=nil; if(!LBTNormalizePath(name,dir,&key,error))return @{@"status":@"invalid",@"errors":@[@"Unsafe archive path"]};
@@ -86,7 +94,8 @@ static NSData *LBTDecode(NSData *input, NSUInteger expected, uint16_t method, NS
         if(e.directory)continue; NSUInteger p=e.localOffset;
         if(!LBTRange(p,30,n)||LBTU32(b+p)!=0x04034b50){if(error)*error=LBTMakeError(27,@"Invalid local file header");return @{@"status":@"invalid",@"errors":@[@"Invalid local header"]};}
         uint16_t localFlags=LBTU16(b+p+6),localMethod=LBTU16(b+p+8),ln=LBTU16(b+p+26),le=LBTU16(b+p+28);
-        NSUInteger data=p+30+(NSUInteger)ln+le; if(localFlags!=e.flags||localMethod!=e.method||!LBTRange(data,e.compressed,n)){if(error)*error=LBTMakeError(28,@"Local and central ZIP headers disagree");return @{@"status":@"invalid",@"errors":@[@"Header mismatch or truncated member"]};}
+        if(!LBTRange(p+30,(NSUInteger)ln+le,n)){if(error)*error=LBTMakeError(73,@"Truncated local header fields");return @{@"status":@"invalid",@"errors":@[@"Truncated local header"]};}
+        NSUInteger data=p+30+(NSUInteger)ln+le; if(localFlags!=e.flags||localMethod!=e.method||!LBTRange(data,e.compressed,n)||data+e.compressed>cdOffset){if(error)*error=LBTMakeError(28,@"Local and central ZIP headers disagree");return @{@"status":@"invalid",@"errors":@[@"Header mismatch or truncated member"]};}
         NSString *localName=[[NSString alloc]initWithBytes:b+p+30 length:ln encoding:NSUTF8StringEncoding]; if(![localName isEqualToString:e.name]){if(error)*error=LBTMakeError(29,@"Local and central entry names disagree");return @{@"status":@"invalid",@"errors":@[@"Filename mismatch"]};}
         NSData *packed=[zip subdataWithRange:NSMakeRange(data,e.compressed)]; NSError *decodeError=nil; NSData *plain=LBTDecode(packed,e.uncompressed,e.method,&decodeError);
         if(!plain){if(error)*error=decodeError;return @{@"status":@"invalid",@"errors":@[decodeError.localizedDescription]};}
