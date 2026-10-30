@@ -1,5 +1,7 @@
 #import "LBRootListController.h"
 #import "../Shared/LBPaths.h"
+#import "LBTendiesValidator.h"
+#import <CommonCrypto/CommonDigest.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <sys/stat.h>
 #import <unistd.h>
@@ -225,16 +227,34 @@ static NSDictionary *LBReadManagedManifest(NSString *entry) {
                         sourceStored = [NSFileManager.defaultManager copyItemAtURL:sourceURL toURL:destinationURL error:&error];
                     }
                     if (sourceStored) {
-                        NSDictionary *manifest = @{
-                            @"schemaVersion": @1,
+                        NSMutableDictionary *manifest = [@{
+                            @"schemaVersion": @2,
                             @"identifier": identifier,
                             @"originalName": sourceURL.lastPathComponent ?: @"Imported item",
                             @"type": sourceType,
                             @"sourceFilename": destination.lastPathComponent,
                             @"sourceBytes": @(size),
                             @"importedAt": [NSDate date],
-                            @"status": [sourceType isEqualToString:@"tendies-unvalidated"] ? @"pending-validation" : @"stored-only"
-                        };
+                            @"status": [sourceType isEqualToString:@"tendies-unvalidated"] ? @"pending-validation" : @"stored-only",
+                            @"validatorVersion": @"1.0.0",
+                            @"installationState": @"installation-disabled"
+                        } mutableCopy];
+                        if ([sourceType isEqualToString:@"tendies-unvalidated"]) {
+                            NSString *extractionPath = [itemDirectory stringByAppendingPathComponent:@"Extracted"];
+                            NSError *validationError = nil;
+                            NSDictionary *validation = [LBTendiesValidator validateArchiveAtPath:destination
+                                extractToPath:extractionPath error:&validationError];
+                            manifest[@"sha256"] = validation[@"sha256"] ?: @"";
+                            manifest[@"validationReport"] = validation ?: @{};
+                            manifest[@"status"] = validation[@"status"] ?: @"incomplete";
+                            if (validationError) manifest[@"validationError"] = validationError.localizedDescription;
+                            if ([manifest[@"status"] isEqualToString:@"extracted"]) {
+                                manifest[@"status"] = @"extracted";
+                                manifest[@"extractionPath"] = @"Extracted";
+                            } else if ([manifest[@"status"] isEqualToString:@"valid"]) {
+                                manifest[@"status"] = @"extraction-ready";
+                            }
+                        }
                         NSData *data = [NSPropertyListSerialization dataWithPropertyList:manifest
                             format:NSPropertyListBinaryFormat_v1_0 options:0 error:&error];
                         if (data && [data writeToFile:[itemDirectory stringByAppendingPathComponent:LBManifestName]
@@ -256,14 +276,13 @@ static NSDictionary *LBReadManagedManifest(NSString *entry) {
             if (access) [sourceURL stopAccessingSecurityScopedResource];
             if (cleanupTemporarySource) [NSFileManager.defaultManager removeItemAtURL:sourceURL error:nil];
         }
-        NSString *title = ok ?
-            ([sourceType isEqualToString:@"tendies-unvalidated"] ? @"Stored for inspection" : @"Import complete") :
-            @"Import failed";
-        NSString *message = ok ?
-            ([sourceType isEqualToString:@"tendies-unvalidated"] ?
-                @"The .tendies source is stored locally but has not been validated or installed into PosterBoard." :
-                @"The source is stored locally. It has not been installed into PosterBoard.") :
-            (error.localizedDescription ?: @"Unknown import error.");
+        NSString *title = ok ? @"Import complete" : @"Import failed";
+        NSString *message = ok ? @"The source is stored locally. It has not been installed into PosterBoard." : (error.localizedDescription ?: @"Unknown import error.");
+        if (ok && [sourceType isEqualToString:@"tendies-unvalidated"]) {
+            NSString *manifestPath = [[LBLibraryPath() stringByAppendingPathComponent:([[NSFileManager.defaultManager contentsOfDirectoryAtPath:LBLibraryPath() error:nil] lastObject] ?: @"")] stringByAppendingPathComponent:LBManifestName];
+            (void)manifestPath;
+            message = @"The .tendies archive was processed. Check its validation state in the local library; PosterBoard compatibility and installation remain disabled.";
+        }
         dispatch_async(dispatch_get_main_queue(), ^{
             [self showMessage:title message:message];
         });
