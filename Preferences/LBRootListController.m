@@ -261,18 +261,24 @@ static NSDictionary *LBReadManagedManifest(NSString *entry) {
                             NSDictionary *validation = [LBTendiesValidator validateArchiveAtPath:destination
                                 extractToPath:extractionPath error:&validationError];
                             manifest[@"sha256"] = LBSHA256ForFile(destination) ?: (validation[@"sha256"] ?: @"");
-                            manifest[@"validationReport"] = validation ?: @{};
-                            manifest[@"status"] = validation[@"status"] ?: @"incomplete";
-                            if (validationError) manifest[@"validationError"] = validationError.localizedDescription;
-                            if (!finalImportStatus) finalImportStatus = manifest[@"status"];
-                            if ([manifest[@"status"] isEqualToString:@"extracted"]) {
+                            NSMutableDictionary *validationReport = [validation mutableCopy] ?: [NSMutableDictionary dictionary];
+                            NSString *validationStatus = [validationReport[@"status"] isKindOfClass:NSString.class] ? validationReport[@"status"] : @"incomplete";
+                            if ([validationStatus isEqualToString:@"extracted"]) {
+                                validationReport[@"extractionStatus"] = @"extracted";
+                                validationReport[@"status"] = @"valid";
                                 manifest[@"status"] = @"extracted";
                                 manifest[@"extractionPath"] = @"Extracted";
                                 finalImportStatus = @"extracted";
-                            } else if ([manifest[@"status"] isEqualToString:@"valid"]) {
+                            } else if ([validationStatus isEqualToString:@"valid"]) {
                                 manifest[@"status"] = @"extraction-ready";
                                 finalImportStatus = @"extraction-ready";
+                            } else {
+                                manifest[@"status"] = validationStatus;
+                                finalImportStatus = validationStatus;
                             }
+                            manifest[@"validationStatus"] = validationReport[@"status"] ?: @"incomplete";
+                            manifest[@"validationReport"] = validationReport;
+                            if (validationError) manifest[@"validationError"] = validationError.localizedDescription;
                         }
                         NSData *data = [NSPropertyListSerialization dataWithPropertyList:manifest
                             format:NSPropertyListBinaryFormat_v1_0 options:0 error:&error];
