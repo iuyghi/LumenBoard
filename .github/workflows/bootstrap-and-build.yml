@@ -258,6 +258,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/lumenboard-audit"
           SOURCE_COMMIT="5c9bfd516d93243d3bd7625839b39e0e68f6c9fb"
           git fetch origin main
           git merge-base --is-ancestor "$SOURCE_COMMIT" refs/remotes/origin/main
