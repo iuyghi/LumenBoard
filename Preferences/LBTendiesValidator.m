@@ -76,7 +76,7 @@ static NSData *LBTProcessMember(const uint8_t *input, NSUInteger inputLength, NS
         }
         BOOL complete=ok&&rc==Z_STREAM_END&&z.total_in==inputLength&&produced==expected;
         inflateEnd(&z);
-        if(!complete){if(error&&!*error)*error=LBTMakeError(24,@"DEFLATE size or input length mismatch");return nil;}
+        if(!complete){if(error)*error=LBTMakeError(24,@"DEFLATE size or input length mismatch");return nil;}
     }else{if(error)*error=LBTMakeError(22,@"Unsupported compression method");return nil;}
     if(produced!=expected||(uint32_t)crc!=expectedCRC){if(error)*error=LBTMakeError(30,@"CRC or uncompressed size mismatch");return nil;}
     return captured?:[NSData data];
