@@ -9,6 +9,20 @@
 static NSString * const LBManifestName = @"manifest.plist";
 static const unsigned long long LBMaxImportBytes = 300ULL * 1024ULL * 1024ULL;
 
+static NSString *LBSHA256ForFile(NSString *path) {
+    NSInputStream *stream = [NSInputStream inputStreamWithFileAtPath:path];
+    [stream open];
+    CC_SHA256_CTX context; CC_SHA256_Init(&context);
+    uint8_t buffer[64 * 1024]; NSInteger count = 0;
+    while ((count = [stream read:buffer maxLength:sizeof(buffer)]) > 0) CC_SHA256_Update(&context, buffer, (CC_LONG)count);
+    NSError *streamError = stream.streamError; [stream close];
+    if (count < 0 || streamError) return nil;
+    unsigned char digest[CC_SHA256_DIGEST_LENGTH]; CC_SHA256_Final(digest, &context);
+    NSMutableString *result = [NSMutableString stringWithCapacity:64];
+    for (NSUInteger i = 0; i < sizeof(digest); i++) [result appendFormat:@"%02x", digest[i]];
+    return result;
+}
+
 
 static NSDictionary *LBReadManagedManifest(NSString *entry) {
     NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:entry ?: @""];
@@ -246,7 +260,7 @@ static NSDictionary *LBReadManagedManifest(NSString *entry) {
                             NSError *validationError = nil;
                             NSDictionary *validation = [LBTendiesValidator validateArchiveAtPath:destination
                                 extractToPath:extractionPath error:&validationError];
-                            manifest[@"sha256"] = validation[@"sha256"] ?: @"";
+                            manifest[@"sha256"] = LBSHA256ForFile(destination) ?: (validation[@"sha256"] ?: @"");
                             manifest[@"validationReport"] = validation ?: @{};
                             manifest[@"status"] = validation[@"status"] ?: @"incomplete";
                             if (validationError) manifest[@"validationError"] = validationError.localizedDescription;
