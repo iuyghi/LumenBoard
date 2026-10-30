@@ -1,5 +1,6 @@
 #import "LBRootListController.h"
 #import "../Shared/LBPaths.h"
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <sys/stat.h>
 #import <unistd.h>
 
@@ -47,7 +48,7 @@ static NSDictionary *LBReadManagedManifest(NSString *entry) {
 }
 
 - (void)importTendiesTapped {
-    UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc] initWithDocumentTypes:@[@"public.data"] inMode:UIDocumentPickerModeImport];
+    UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTType.data] asCopy:YES];
     picker.delegate = self;
     picker.allowsMultipleSelection = NO;
     [self presentViewController:picker animated:YES completion:nil];
