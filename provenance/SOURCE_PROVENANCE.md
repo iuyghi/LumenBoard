@@ -49,3 +49,8 @@ The original source commit remains unchanged. The two build-environment correcti
 2. **Subproject architecture.** The first build log showed Theos compiling the Preferences bundle for both `arm64e` and `arm64`, despite `ARCHS = arm64` in the aggregate root Makefile. The aggregate sub-make does not reliably inherit an ordinary parent Makefile variable. `Preferences/Makefile` now explicitly declares `ARCHS = arm64` and `TARGET = iphone:clang:latest:16.0`, keeping the built subproject aligned with the intended arm64/iOS 16 target. This avoids producing an arm64e slice not requested by the project's target configuration.
 
 These changes affect only the Preferences picker initializer and the Preferences build target settings. They do not enable or package the daemon, change privileged file operations, alter the rootless install prefix, or enable native PosterBoard installation. The build log and post-change test result are required before treating the package as verified. No installation or runtime test on a device has been performed.
+
+
+## Additional packaging runtime dependency
+
+The first successful compile/link exposed a missing shared-library prerequisite during Theos `make package`: the Theos `plistutil` executable could not load `libplist-2.0.so.4`. On Ubuntu 24.04 this runtime is packaged as `libplist-2.0-4`; the CI dependency list now installs it explicitly alongside `libplist-utils`. This is a runner dependency only and does not change the application source or the produced package dependencies.
