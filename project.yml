@@ -1,5 +1,7 @@
 name: LumenBoardNativeTests
 options:
+  projectFormat: xcode15_0
+  xcodeVersion: "15.4"
   bundleIdPrefix: com.iuyghi.lumenboard.tests
   deploymentTarget:
     macOS: "13.0"
