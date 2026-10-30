@@ -1,10 +1,9 @@
-name: Verify source bundle, import history, and build DEB
+name: Verify original bundle, import history, test and build rootless DEB
 
 on:
   push:
     branches: [main]
     paths:
-      - "provenance/transfer/**"
       - ".github/workflows/bootstrap-and-build.yml"
   workflow_dispatch:
 
@@ -12,116 +11,346 @@ permissions:
   contents: write
 
 concurrency:
-  group: lumenboard-main-source-import
+  group: lumenboard-original-source-import
   cancel-in-progress: false
 
 jobs:
-  verify-import-build:
+  verify-import-test-build:
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 60
     steps:
-      - name: Checkout private destination repository
+      - name: Checkout destination repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Reconstruct and verify original Git bundle
-        id: source
+      - name: Verify explicit segment manifest and reconstruct original bundle
+        id: bundle
         shell: bash
         run: |
           set -euo pipefail
-          test -d provenance/transfer
-          mapfile -t parts < <(find provenance/transfer -maxdepth 1 -type f -name '*.b64' -print | LC_ALL=C sort)
-          echo "Bundle segments found: ${#parts[@]}"
-          test "${#parts[@]}" -eq 46
-          for p in "${parts[@]}"; do test -s "$p"; done
-          cat "${parts[@]}" > "$RUNNER_TEMP/LumenBoard.bundle.b64"
-          base64 --decode "$RUNNER_TEMP/LumenBoard.bundle.b64" > "$RUNNER_TEMP/LumenBoard.bundle"
-          echo "3c35135f43dc91ef92edd0e6b34df8e741656389ef4d5a4b74a32d6d38c272b1  $RUNNER_TEMP/LumenBoard.bundle" | sha256sum --check -
-          git bundle verify "$RUNNER_TEMP/LumenBoard.bundle"
-          git clone "$RUNNER_TEMP/LumenBoard.bundle" "$RUNNER_TEMP/source-checkout"
-          test "$(git -C "$RUNNER_TEMP/source-checkout" rev-parse HEAD)" = "5c9bfd516d93243d3bd7625839b39e0e68f6c9fb"
-          git -C "$RUNNER_TEMP/source-checkout" cat-file -e '5c9bfd516d93243d3bd7625839b39e0e68f6c9fb^{commit}'
-          git -C "$RUNNER_TEMP/source-checkout" fsck --full --strict
-          test -z "$(git -C "$RUNNER_TEMP/source-checkout" status --porcelain)"
-          echo "Verified original commit, bundle hash, object database, and clean checkout."
+          mkdir -p "$RUNNER_TEMP/lumenboard-audit"
+          python3 - <<'PY' | tee "$RUNNER_TEMP/lumenboard-audit/segment-audit.txt"
+          import base64
+          import hashlib
+          import pathlib
+          import re
+          
+          manifest = pathlib.Path("provenance/transfer-recovery/MANIFEST.tsv")
+          rows = manifest.read_text(encoding="utf-8").splitlines()
+          if len(rows) != 51:
+              raise SystemExit(f"FAIL: expected 51 explicitly ordered segments, got {len(rows)}")
+          offset = 0
+          seen_paths = set()
+          seen_data = set()
+          parts = []
+          for number, row in enumerate(rows, 1):
+              fields = row.split("\t")
+              if len(fields) != 4:
+                  raise SystemExit(f"FAIL: manifest line {number} does not have four tab-separated fields")
+              start, end, expected_len = map(int, fields[:3])
+              path = pathlib.Path(fields[3])
+              if start != offset or end - start != expected_len:
+                  raise SystemExit(f"FAIL: discontinuous or invalid range on line {number}: {row}")
+              if fields[3] in seen_paths:
+                  raise SystemExit(f"FAIL: duplicate manifest path: {fields[3]}")
+              seen_paths.add(fields[3])
+              data = path.read_bytes()
+              if len(data) != expected_len:
+                  raise SystemExit(f"FAIL: {path}: expected {expected_len} bytes, got {len(data)}")
+              if not re.fullmatch(rb"[A-Za-z0-9+/]+", data):
+                  raise SystemExit(f"FAIL: {path}: non-Base64 byte, whitespace or padding found")
+              digest = hashlib.sha256(data).hexdigest()
+              if digest in seen_data:
+                  raise SystemExit(f"FAIL: duplicate segment content: {path}")
+              seen_data.add(digest)
+              print(f"{number:02d}\t{start}-{end}\t{len(data)}\t{digest}\t{path}")
+              parts.append(data)
+              offset = end
+          if offset != 111452:
+              raise SystemExit(f"FAIL: manifest ends at {offset}; expected 111452")
+          encoded = b"".join(parts)
+          if len(encoded) != 111452:
+              raise SystemExit(f"FAIL: reconstructed Base64 length is {len(encoded)}")
+          raw = base64.b64decode(encoded, validate=True)
+          if len(raw) != 83589:
+              raise SystemExit(f"FAIL: decoded bundle length is {len(raw)}")
+          digest = hashlib.sha256(raw).hexdigest()
+          expected = "3c35135f43dc91ef92edd0e6b34df8e741656389ef4d5a4b74a32d6d38c272b1"
+          print(f"segments={len(rows)}")
+          print(f"base64_bytes={len(encoded)}")
+          print(f"bundle_bytes={len(raw)}")
+          print(f"bundle_sha256={digest}")
+          if digest != expected:
+              raise SystemExit(f"FAIL: bundle SHA-256 {digest} != expected {expected}")
+          pathlib.Path("$RUNNER_TEMP/LumenBoard-original.bundle").write_bytes(raw)
+          print("PASS: exact original bundle reconstructed and SHA-256 verified")
+          PY
+          test -s "$RUNNER_TEMP/LumenBoard-original.bundle"
+          echo "bundle_path=$RUNNER_TEMP/LumenBoard-original.bundle" >> "$GITHUB_OUTPUT"
+          echo "manifest_sha256=$(sha256sum provenance/transfer-recovery/MANIFEST.tsv | awk '{print $1}')" >> "$GITHUB_OUTPUT"
 
-      - name: Import source history without force-push
+      - name: Verify Git bundle, refs, commit and object database
+        id: git-verify
         shell: bash
         run: |
           set -euo pipefail
-          SOURCE_COMMIT=5c9bfd516d93243d3bd7625839b39e0e68f6c9fb
+          BUNDLE="$RUNNER_TEMP/LumenBoard-original.bundle"
+          EXPECTED="5c9bfd516d93243d3bd7625839b39e0e68f6c9fb"
+          {
+            git bundle verify "$BUNDLE"
+            echo "=== bundle refs ==="
+            git bundle list-heads "$BUNDLE"
+          } 2>&1 | tee "$RUNNER_TEMP/lumenboard-audit/git-bundle-verify.txt"
+          bundle_head="$(git bundle list-heads "$BUNDLE" refs/heads/main | awk 'NR==1 {print $1}')"
+          test "$bundle_head" = "$EXPECTED"
+          rm -rf "$RUNNER_TEMP/LumenBoard-source-checkout"
+          git clone "$BUNDLE" "$RUNNER_TEMP/LumenBoard-source-checkout"
+          SOURCE="$RUNNER_TEMP/LumenBoard-source-checkout"
+          test "$(git -C "$SOURCE" rev-parse HEAD)" = "$EXPECTED"
+          test "$(git -C "$SOURCE" cat-file -t "$EXPECTED")" = "commit"
+          git -C "$SOURCE" cat-file -e "$EXPECTED^{commit}"
+          git -C "$SOURCE" fsck --full --strict 2>&1 | tee "$RUNNER_TEMP/lumenboard-audit/git-fsck.txt"
+          test -z "$(git -C "$SOURCE" status --porcelain)"
+          echo "source_commit=$EXPECTED" >> "$GITHUB_OUTPUT"
+          echo "source_file_count=$(git -C "$SOURCE" ls-tree -r --name-only HEAD | wc -l | tr -d ' ')" >> "$GITHUB_OUTPUT"
+          git -C "$SOURCE" log --graph --decorate --oneline --all > "$RUNNER_TEMP/lumenboard-audit/source-history.txt"
+          echo "PASS: bundle refs, exact source HEAD, object database and clean checkout verified"
+
+      - name: Import original history with non-force merge
+        id: import
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_COMMIT="5c9bfd516d93243d3bd7625839b39e0e68f6c9fb"
+          BUNDLE="$RUNNER_TEMP/LumenBoard-original.bundle"
+          INITIAL_MAIN="$(git rev-parse refs/remotes/origin/main)"
+          git status --short
+          test -z "$(git status --porcelain)"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if ! git cat-file -e "$SOURCE_COMMIT^{commit}" 2>/dev/null; then
-            git fetch "$RUNNER_TEMP/LumenBoard.bundle" refs/heads/main:refs/remotes/lumenboard-source/main
-            test "$(git rev-parse refs/remotes/lumenboard-source/main)" = "$SOURCE_COMMIT"
-            git merge --allow-unrelated-histories --no-ff --no-edit refs/remotes/lumenboard-source/main
+          git fetch "$BUNDLE" refs/heads/main:refs/remotes/lumenboard-original/main
+          test "$(git rev-parse refs/remotes/lumenboard-original/main)" = "$SOURCE_COMMIT"
+          if ! git merge-base --is-ancestor "$SOURCE_COMMIT" HEAD; then
+            git merge --no-ff --allow-unrelated-histories --no-edit refs/remotes/lumenboard-original/main
           fi
-          git merge-base --is-ancestor "$SOURCE_COMMIT" HEAD
-          git rm -r provenance/transfer
+          IMPORTED_HEAD="$(git rev-parse HEAD)"
+          git merge-base --is-ancestor "$SOURCE_COMMIT" "$IMPORTED_HEAD"
+          git merge-base --is-ancestor "$INITIAL_MAIN" "$IMPORTED_HEAD"
+          git fetch origin main
+          test "$(git rev-parse refs/remotes/origin/main)" = "$INITIAL_MAIN"
+          git push origin HEAD:main
+          git fetch origin main
+          test "$(git rev-parse refs/remotes/origin/main)" = "$IMPORTED_HEAD"
+          git merge-base --is-ancestor "$SOURCE_COMMIT" refs/remotes/origin/main
+          git merge-base --is-ancestor "$INITIAL_MAIN" refs/remotes/origin/main
+          echo "initial_main=$INITIAL_MAIN" >> "$GITHUB_OUTPUT"
+          echo "imported_head=$IMPORTED_HEAD" >> "$GITHUB_OUTPUT"
+          echo "PASS: source commit and previous main are both reachable; normal non-force push confirmed"
+
+      - name: Remove temporary transfer files after verified import and write provenance
+        id: provenance
+        shell: bash
+        env:
+          INITIAL_MAIN: ${{ steps.import.outputs.initial_main }}
+          IMPORTED_HEAD: ${{ steps.import.outputs.imported_head }}
+          MANIFEST_SHA256: ${{ steps.bundle.outputs.manifest_sha256 }}
+        run: |
+          set -euo pipefail
+          SOURCE_COMMIT="5c9bfd516d93243d3bd7625839b39e0e68f6c9fb"
+          git fetch origin main
+          test "$(git rev-parse HEAD)" = "$IMPORTED_HEAD"
+          test "$(git rev-parse refs/remotes/origin/main)" = "$IMPORTED_HEAD"
+          git merge-base --is-ancestor "$SOURCE_COMMIT" refs/remotes/origin/main
+          git merge-base --is-ancestor "$INITIAL_MAIN" refs/remotes/origin/main
+          git rm -r --ignore-unmatch provenance/transfer provenance/transfer-recovery
           mkdir -p provenance
-          cat > provenance/SOURCE_PROVENANCE.md <<'EOF'
-          # Source provenance
+          cat > provenance/SOURCE_PROVENANCE.md <<EOF
+          # LumenBoard source provenance
 
-          This repository imports the verified LumenBoard source history from the Git bundle whose SHA-256 is
-          `3c35135f43dc91ef92edd0e6b34df8e741656389ef4d5a4b74a32d6d38c272b1`.
+          ## Immutable source material
 
-          Original source HEAD: `5c9bfd516d93243d3bd7625839b39e0e68f6c9fb`.
+          - Original Git bundle: `LumenBoard-Development-Fresh-chatgpt-replit-audit.bundle`
+          - Git bundle SHA-256: `3c35135f43dc91ef92edd0e6b34df8e741656389ef4d5a4b74a32d6d38c272b1`
+          - Original bundle size: 83,589 bytes
+          - Original Git source HEAD: `$SOURCE_COMMIT`
+          - Original source archive: `LumenBoard-Development-Fresh-source-immutable-2026-10-29.zip`
+          - Source archive SHA-256: `bab4191bffc8d458b4d94d94852d0c04e4271c060437e0bf268fae760df35962`
+          - Source archive size: 156,546 bytes
 
-          Immutable source ZIP: `LumenBoard-Development-Fresh-source-immutable-2026-10-29.zip`
-          SHA-256: `bab4191bffc8d458b4d94d94852d0c04e4271c060437e0bf268fae760df35962`.
+          ## Reconstruction and forensic correction
 
-          The local audit found that the 44 non-cache files in the immutable ZIP match the corresponding files in
-          the source commit byte-for-byte. The Git bundle contains the original commit history and 49 tracked files,
-          including five additional audit/support documentation or log files outside the ZIP snapshot.
+          The original bundle was recovered independently from the ChatGPT conversation uploads. Two copies of both the bundle and source ZIP were byte-identical and matched the checksums above.
 
-          The bundle was reconstructed in GitHub Actions from temporary transfer segments and is hash-checked before
-          any merge. This import uses a non-fast-forward merge with unrelated histories enabled; it does not force-push.
+          The original remote staging directory contained 46 Base64 fragments. Lexicographic concatenation was invalid. The forensic offset map found two duplicate intervals: offsets 62,000-64,000 (the segment named `part-06ab.b64`, already covered by `part-06b.b64`) and one duplicated character at offset 111,434 (the segment named `part-11bb1b2a3.b64`, already present in `part-12a-14.b64`). Missing source intervals were offsets 58,000-60,000 (2,000 characters) and 102,874-102,875 (one character).
+
+          A 51-entry, non-overlapping manifest was used. Its SHA-256 was `$MANIFEST_SHA256`. The workflow checked every segment's declared byte length, ASCII Base64 alphabet, uniqueness, contiguous start/end offsets and total size (111,452 characters), decoded with strict Base64 validation, and verified the resulting 83,589-byte bundle against the original SHA-256 before running any Git import command.
+
+          ## ZIP-to-Git source comparison
+
+          The immutable ZIP contained 52 regular files, including eight Python cache files; its 44 non-cache files all matched the corresponding files in the original Git commit byte-for-byte. The original Git commit contained 49 tracked files. There were zero ZIP-only files, zero byte differences, and five Git-only documentation/audit/log files:
+
+          - `docs/CHATGPT_REPLIT_ENVIRONMENT_AUDIT_2026-10-29.md`
+          - `logs/CHATGPT_REPLIT_ENV_AUDIT_MAKE_2026-10-29.log`
+          - `logs/CHATGPT_REPLIT_ENV_AUDIT_NETWORK_2026-10-29.log`
+          - `logs/CHATGPT_REPLIT_ENV_AUDIT_TESTS_2026-10-29.log`
+          - `logs/SOURCE_ARCHIVE_SHA256_2026-10-29.txt`
+
+          ## Import into this repository
+
+          - Destination repository: `iuyghi/LumenBoard` (private)
+          - Destination branch: `main`
+          - Destination main SHA immediately before import: `$INITIAL_MAIN`
+          - Import merge commit: `$IMPORTED_HEAD`
+          - Source commit remains unchanged and is an ancestor of `main`.
+          - The pre-existing destination main commit remains an ancestor of `main`.
+          - Import used a normal merge and a normal, non-force push. No force-push or history rewrite was used.
+
+          Temporary staging fragments and the reconstruction manifest were removed only after the bundle checksum, Git bundle validation, source commit, object integrity and remote import were verified. The complete original source history remains in Git.
           EOF
           git add provenance/SOURCE_PROVENANCE.md
-          if ! git diff --cached --quiet; then
-            git commit -m "bootstrap: import verified LumenBoard source history"
-          fi
+          git commit -m "provenance: document verified original source import"
+          PROVENANCE_HEAD="$(git rev-parse HEAD)"
+          git fetch origin main
+          test "$(git rev-parse refs/remotes/origin/main)" = "$IMPORTED_HEAD"
           git push origin HEAD:main
+          git fetch origin main
+          test "$(git rev-parse refs/remotes/origin/main)" = "$PROVENANCE_HEAD"
+          git merge-base --is-ancestor "$SOURCE_COMMIT" refs/remotes/origin/main
+          git merge-base --is-ancestor "$INITIAL_MAIN" refs/remotes/origin/main
+          test -z "$(git status --porcelain)"
+          echo "provenance_head=$PROVENANCE_HEAD" >> "$GITHUB_OUTPUT"
+          echo "PASS: temporary fragments removed after successful import; permanent provenance committed"
 
-      - name: Run unit tests and Python static checks
+      - name: Run complete unit tests and static checks
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse 5c9bfd516d93243d3bd7625839b39e0e68f6c9fb^{commit})" = "5c9bfd516d93243d3bd7625839b39e0e68f6c9fb"
-          python3 -m unittest discover -s tests -v
+          SOURCE_COMMIT="5c9bfd516d93243d3bd7625839b39e0e68f6c9fb"
+          git fetch origin main
+          git merge-base --is-ancestor "$SOURCE_COMMIT" refs/remotes/origin/main
+          python3 -m unittest discover -s tests -v 2>&1 | tee "$RUNNER_TEMP/lumenboard-audit/unittest.log"
+          python3 - <<'PY'
+          import pathlib, re
+          log = pathlib.Path("$RUNNER_TEMP/lumenboard-audit/unittest.log").read_text()
+          matches = re.findall(r"^Ran (\d+) tests? in ", log, re.M)
+          if not matches:
+              raise SystemExit("FAIL: unittest summary not found")
+          count = int(matches[-1])
+          if count != 68:
+              raise SystemExit(f"FAIL: expected historical reference of 68 tests, got {count}")
+          if not re.search(r"^OK\s*$", log, re.M):
+              raise SystemExit("FAIL: unittest output does not end in OK")
+          print(f"PASS: {count} unit tests")
+          PY
           python3 -m compileall -q tools tests
+          if git grep -n -I -E 'gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|BEGIN (RSA|OPENSSH|EC) PRIVATE KEY' -- .; then
+            echo "FAIL: possible secret material detected in tracked sources" >&2
+            exit 1
+          fi
+          test -z "$(git status --porcelain)"
+          echo "PASS: unit tests, compileall, secret-pattern scan and clean tracked tree"
 
-      - name: Install build dependencies and Theos
+      - name: Install official Theos Linux toolchain and iOS SDK
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential clang make perl curl ca-certificates git python3 dpkg-dev fakeroot rsync file xz-utils libxml2-utils libplist-utils libtinfo6
-          CI=true bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
-          test -d "$HOME/theos/makefiles"
-          echo "THEOS=$HOME/theos" >> "$GITHUB_ENV"
-          echo "$HOME/theos/bin" >> "$GITHUB_PATH"
+          sudo apt-get install -y --no-install-recommends build-essential fakeroot rsync curl perl zip git libxml2 libtinfo6 libio-compress-lzma-perl ca-certificates python3 dpkg-dev file xz-utils
+          CI=true bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)" 2>&1 | tee "$RUNNER_TEMP/lumenboard-audit/theos-install.log"
+          export THEOS="$HOME/theos"
+          test -f "$THEOS/makefiles/common.mk"
+          test -x "$THEOS/toolchain/linux/iphone/bin/clang"
+          SDK="$(find "$THEOS/sdks" -maxdepth 1 -type d -name 'iPhoneOS*.sdk' -print -quit)"
+          test -n "$SDK"
+          export PATH="$THEOS/toolchain/linux/iphone/bin:$PATH"
+          LDID="$(command -v ldid || find "$THEOS/toolchain/linux/iphone/bin" -maxdepth 1 -type f -name ldid -perm /111 -print -quit)"
+          test -n "$LDID"
+          test -x "$LDID"
+          echo "THEOS=$THEOS" >> "$GITHUB_ENV"
+          echo "$THEOS/toolchain/linux/iphone/bin" >> "$GITHUB_PATH"
+          {
+            echo "Theos commit: $(git -C "$THEOS" rev-parse HEAD)"
+            echo "Theos path: $THEOS"
+            echo "iOS SDK: $SDK"
+            echo "Compiler: $("$THEOS/toolchain/linux/iphone/bin/clang" --version | head -n 1)"
+            echo "ldid: $LDID"
+            "$LDID" -V 2>&1 || true
+            dpkg-deb --version | head -n 1
+            make --version | head -n 1
+          } | tee "$RUNNER_TEMP/lumenboard-audit/theos-toolchain.txt"
 
-      - name: Build and verify rootless DEB
+      - name: Build and independently inspect rootless DEB
         shell: bash
         run: |
           set -euo pipefail
-          bash tools/build_and_verify_deb.sh
-          mapfile -t packages < <(find packages -maxdepth 1 -type f -name '*.deb' -print | sort)
+          export THEOS="$HOME/theos"
+          export PATH="$THEOS/toolchain/linux/iphone/bin:$PATH"
+          bash tools/build_and_verify_deb.sh 2>&1 | tee "$RUNNER_TEMP/lumenboard-audit/build-and-project-verification.log"
+          shopt -s nullglob
+          packages=(packages/*.deb)
           test "${#packages[@]}" -eq 1
-          dpkg-deb --info "${packages[0]}"
-          dpkg-deb -f "${packages[0]}" Package Version Architecture Depends
-          dpkg-deb --contents "${packages[0]}"
-          file "${packages[0]}"
-          sha256sum "${packages[0]}"
+          DEB="${packages[0]}"
+          dpkg-deb --info "$DEB" | tee "$RUNNER_TEMP/lumenboard-audit/dpkg-deb-info.txt"
+          PACKAGE="$(dpkg-deb -f "$DEB" Package)"
+          VERSION="$(dpkg-deb -f "$DEB" Version)"
+          ARCH="$(dpkg-deb -f "$DEB" Architecture)"
+          DEPENDS="$(dpkg-deb -f "$DEB" Depends)"
+          test "$PACKAGE" = "com.iuyghi.lumenboard"
+          test "$VERSION" = "0.1.0-1"
+          test "$ARCH" = "iphoneos-arm64"
+          [[ "$DEPENDS" == *"firmware (>= 16.0)"* ]]
+          [[ "$DEPENDS" == *"firmware (<< 17.0)"* ]]
+          [[ "$DEPENDS" == *"preferenceloader"* ]]
+          dpkg-deb --contents "$DEB" | tee "$RUNNER_TEMP/lumenboard-audit/dpkg-deb-contents.txt"
+          if dpkg-deb --contents "$DEB" | awk '{print $NF}' | grep -Ev '^(\./|\./var/jb/)' | grep -q .; then
+            echo "FAIL: package contains paths outside rootless /var/jb prefix" >&2
+            exit 1
+          fi
+          EXTRACT="$RUNNER_TEMP/lumenboard-deb-extract"
+          mkdir -p "$EXTRACT"
+          dpkg-deb -x "$DEB" "$EXTRACT"
+          test -f "$EXTRACT/var/jb/Library/PreferenceLoader/Preferences/LumenBoard.plist"
+          test -x "$EXTRACT/var/jb/Library/PreferenceBundles/LumenBoardPrefs.bundle/LumenBoardPrefs"
+          file "$EXTRACT/var/jb/Library/PreferenceBundles/LumenBoardPrefs.bundle/LumenBoardPrefs" | tee "$RUNNER_TEMP/lumenboard-audit/macho-file.txt"
+          ! find "$EXTRACT" -type f \( -name '*.pyc' -o -name '*.b64' -o -name '*.bundle' -o -name '*.zip' -o -name '*.log' \) | grep -q .
+          if find "$EXTRACT" -type f | grep -Eiq '(id_rsa|\.pem$|\.p12$|\.mobileprovision$|\.p8$|\.key$)'; then
+            echo "FAIL: potential signing credential or private key found in package" >&2
+            exit 1
+          fi
+          mkdir -p packages
+          sha256sum "$DEB" > packages/LumenBoard-rootless-DEB.sha256
+          {
+            echo "Package: $PACKAGE"
+            echo "Version: $VERSION"
+            echo "Architecture: $ARCH"
+            echo "Depends: $DEPENDS"
+            echo "Size bytes: $(stat -c %s "$DEB")"
+            echo "SHA-256: $(awk '{print $1}' packages/LumenBoard-rootless-DEB.sha256)"
+            echo "Theos commit: $(git -C "$THEOS" rev-parse HEAD)"
+            echo "iOS SDK: $(find "$THEOS/sdks" -maxdepth 1 -type d -name 'iPhoneOS*.sdk' -printf '%f\n' | sort | tail -n 1)"
+            echo "Rootless prefix: /var/jb"
+            echo "Scope: package content and metadata verified; no device installation/runtime test performed"
+          } | tee packages/BUILD-METADATA.txt
+          cp "$RUNNER_TEMP/lumenboard-audit/build-and-project-verification.log" "$RUNNER_TEMP/lumenboard-audit/" 2>/dev/null || true
+          echo "PASS: fresh DEB metadata, dependencies, rootless paths, arm64 Mach-O and SHA-256 verified"
 
-      - name: Upload verified DEB artifact
-        if: success()
+      - name: Upload verified rootless DEB
         uses: actions/upload-artifact@v4
         with:
           name: LumenBoard-rootless-DEB
-          path: packages/*.deb
+          path: |
+            packages/*.deb
+            packages/LumenBoard-rootless-DEB.sha256
+            packages/BUILD-METADATA.txt
           if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload diagnostic logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: LumenBoard-build-audit-logs
+          path: "$RUNNER_TEMP/lumenboard-audit/"
+          if-no-files-found: ignore
           retention-days: 14
