@@ -87,7 +87,9 @@ static NSData *StoredZip(NSArray<NSDictionary *> *items, BOOL corruptCRC) {
     [[NSFileManager defaultManager]removeItemAtPath:p error:nil];
 }
 - (void)testRejectsExistingExtractionDestination {
-    NSString *p=[self writeZip:StoredZip(@[@{@"name":@"descriptors/a",@"data":[NSData data]}],NO)];
+    NSDictionary *wp=@{@"identifier":@1,@"name":@"Synthetic",@"assets":@{}};
+    NSData *plist=[NSPropertyListSerialization dataWithPropertyList:wp format:NSPropertyListXMLFormat_v1_0 options:0 error:nil];
+    NSString *p=[self writeZip:StoredZip(@[@{@"name":@"descriptors/fixture/Wallpaper.plist",@"data":plist}],NO)];
     NSString *out=[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
     [[NSFileManager defaultManager]createDirectoryAtPath:out withIntermediateDirectories:NO attributes:nil error:nil];
     NSError *e=nil; NSDictionary *r=[LBTendiesValidator validateArchiveAtPath:p extractToPath:out error:&e];
