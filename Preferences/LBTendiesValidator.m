@@ -7,8 +7,8 @@
 
 static NSString * const LBTDomain = @"com.iuyghi.LumenBoard.Tendies";
 static const uint64_t LBTMaxArchive = 300ULL * 1024ULL * 1024ULL;
-static const uint64_t LBTMaxTotal = 512ULL * 1024ULL * 1024ULL;
-static const uint64_t LBTMaxFile = 128ULL * 1024ULL * 1024ULL;
+static const uint64_t LBTMaxTotal = 128ULL * 1024ULL * 1024ULL;
+static const uint64_t LBTMaxFile = 64ULL * 1024ULL * 1024ULL;
 static const NSUInteger LBTMaxEntries = 2048, LBTMaxPlist = 8 * 1024 * 1024;
 static NSError *LBTMakeError(NSInteger code, NSString *message) { return [NSError errorWithDomain:LBTDomain code:code userInfo:@{NSLocalizedDescriptionKey:message ?: @"Validation failed"}]; }
 static uint16_t LBTU16(const uint8_t *p) { return (uint16_t)(p[0] | ((uint16_t)p[1] << 8)); }
