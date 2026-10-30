@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+# Rootless launchd label; install only, do not modify PosterBoard wallpaper data.
+/bin/launchctl kickstart -k system/com.iuyghi.lumenboardd >/dev/null 2>&1 || true
+exit 0

@@ -1,0 +1,9 @@
+{
+    entry = {
+        bundle = LumenBoardPrefs;
+        cell = PSLinkCell;
+        detail = LumenBoardRootListController;
+        isController = 1;
+        label = LumenBoard;
+    };
+}

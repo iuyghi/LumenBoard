@@ -1,0 +1,41 @@
+LumenBoard ChatGPT/Replit environment audit — 2026-10-29
+
+Runtime
+Linux x86_64, Debian GNU/Linux 13 (trixie), kernel 6.18.55.
+
+Available tools
+clang/clang++ from /usr/local/swift/usr/bin, llvm-ar, ld.lld/lld, make, git, curl, wget, dpkg-deb, dpkg-scanpackages, fakeroot.
+No ld64 or ldid found in PATH.
+
+Network configuration
+/etc/resolv.conf: nameserver 168.63.129.16
+Default route via 172.26.36.1 dev eth0.
+No HTTP_PROXY/HTTPS_PROXY/ALL_PROXY configured (empty); no_proxy only localhost/127.0.0.1.
+getent ahosts returned no addresses for github.com, raw.githubusercontent.com, deb.debian.org.
+TLS-verified curl to https://theos.dev/docs/installation-linux failed: curl (6), could not resolve host.
+TLS-verified curl to https://github.com/theos/sdks/releases/latest/download/iPhoneOS16.5.sdk.tar.xz failed: curl (6), could not resolve host.
+TLS-verified curl to https://deb.debian.org failed: curl (6), could not resolve host.
+To distinguish DNS from outbound-network restrictions, curl --resolve was tried with the hostname retained for HTTPS/TLS verification:
+- github.com via 140.82.112.4: curl (7), could not connect to server.
+- raw.githubusercontent.com via 185.199.108.133: curl (7), could not connect to server.
+- deb.debian.org via 151.101.2.132: curl (7), could not connect to server.
+No TLS verification was disabled and no network configuration was modified.
+
+Caches and toolchain search
+/var/cache/apt/archives contained only lock; no cached package archives found.
+Search of /mnt/data, /opt, /usr/local, /home, /root, and /tmp found no Theos common.mk, iPhoneOS SDK archives, iOS ld64, ldid, or Linux iOS toolchain archive.
+
+Project tests
+python3 -m unittest discover -s tests -v: 68 tests passed.
+
+Build attempt
+make clean package FINALPACKAGE=1
+Makefile:7: /makefiles/common.mk: No such file or directory
+make: *** No rule to make target '/makefiles/common.mk'. Stop.
+Exit code 2. THEOS is unset, so the include expands to /makefiles/common.mk.
+
+App/plugin check
+Replit app integration is available in ChatGPT but not connected to this account in this session. The app's public description advertises prompt-driven app creation/editing; it does not establish that this session has an interactive arbitrary Linux shell or permits installation of an iOS cross-toolchain. Connection is required to inspect actual exposed capabilities. No Replit project was created and no paid action was initiated.
+
+Artifact status
+No .deb exists or was produced. No iPhone installation, PosterBoard writes, or GitHub push occurred.
