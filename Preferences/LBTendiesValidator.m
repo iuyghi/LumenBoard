@@ -4,6 +4,9 @@
 #import <fcntl.h>
 #import <unistd.h>
 #import <zlib.h>
+#import <errno.h>
+#import <limits.h>
+#import <string.h>
 
 static NSString * const LBTDomain = @"com.iuyghi.LumenBoard.Tendies";
 static const uint64_t LBTMaxArchive = 300ULL * 1024ULL * 1024ULL;
