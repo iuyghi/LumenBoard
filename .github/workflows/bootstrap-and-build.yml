@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   verify-import-test-build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - name: Checkout destination repository
@@ -358,6 +358,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: LumenBoard-build-audit-logs
-          path: "$RUNNER_TEMP/lumenboard-audit/"
+          path: "${{ runner.temp }}/lumenboard-audit/"
           if-no-files-found: ignore
           retention-days: 14
