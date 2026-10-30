@@ -39,3 +39,13 @@ The immutable ZIP contained 52 regular files, including eight Python cache files
 - Import used a normal merge and a normal, non-force push. No force-push or history rewrite was used.
 
 Temporary staging fragments and the reconstruction manifest were removed only after the bundle checksum, Git bundle validation, source commit, object integrity and remote import were verified. The complete original source history remains in Git.
+
+
+## Reproducible build adjustments (2026-10-30)
+
+The original source commit remains unchanged. The two build-environment corrections below are separate commits on `main` and are documented as post-import build compatibility changes:
+
+1. **Document picker API.** The first real Theos compile on Ubuntu 24.04 with the installed iPhoneOS 16.5 SDK failed because `UIDocumentPickerViewController.initWithDocumentTypes:inMode:` and `UIDocumentPickerModeImport` were deprecated beginning with iOS 14 and the target build treats deprecation warnings as errors. `Preferences/LBRootListController.m` now imports UniformTypeIdentifiers and uses `initForOpeningContentTypes:@[UTType.data] asCopy:YES`. This preserves the original generic-data file type and copy/import semantics while using the API supported by the project's iOS 16 deployment target. The Preferences Makefile already links UniformTypeIdentifiers.
+2. **Subproject architecture.** The first build log showed Theos compiling the Preferences bundle for both `arm64e` and `arm64`, despite `ARCHS = arm64` in the aggregate root Makefile. The aggregate sub-make does not reliably inherit an ordinary parent Makefile variable. `Preferences/Makefile` now explicitly declares `ARCHS = arm64` and `TARGET = iphone:clang:latest:16.0`, keeping the built subproject aligned with the intended arm64/iOS 16 target. This avoids producing an arm64e slice not requested by the project's target configuration.
+
+These changes affect only the Preferences picker initializer and the Preferences build target settings. They do not enable or package the daemon, change privileged file operations, alter the rootless install prefix, or enable native PosterBoard installation. The build log and post-change test result are required before treating the package as verified. No installation or runtime test on a device has been performed.
