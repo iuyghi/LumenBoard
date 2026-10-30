@@ -208,6 +208,7 @@ static NSDictionary *LBReadManagedManifest(NSString *entry) {
         BOOL access = sourceURL.isFileURL && [sourceURL startAccessingSecurityScopedResource];
         NSError *error = nil;
         BOOL ok = NO;
+        BOOL preserveItemDirectory = NO;
         @try {
             struct stat sourceStat;
             BOOL sourceIsRegular = sourceURL.isFileURL &&
@@ -243,6 +244,7 @@ static NSDictionary *LBReadManagedManifest(NSString *entry) {
                         sourceStored = [NSFileManager.defaultManager copyItemAtURL:sourceURL toURL:destinationURL error:&error];
                     }
                     if (sourceStored) {
+                        preserveItemDirectory = YES;
                         NSMutableDictionary *manifest = [@{
                             @"schemaVersion": @2,
                             @"identifier": identifier,
@@ -256,11 +258,25 @@ static NSDictionary *LBReadManagedManifest(NSString *entry) {
                             @"installationState": @"installation-disabled"
                         } mutableCopy];
                         if ([sourceType isEqualToString:@"tendies-unvalidated"]) {
-                            NSString *extractionPath = [itemDirectory stringByAppendingPathComponent:@"Extracted"];
-                            NSError *validationError = nil;
-                            NSDictionary *validation = [LBTendiesValidator validateArchiveAtPath:destination
-                                extractToPath:extractionPath error:&validationError];
-                            manifest[@"sha256"] = LBSHA256ForFile(destination) ?: (validation[@"sha256"] ?: @"");
+                            // Persist a durable pending state before validation or extraction.
+                            // If the process is interrupted, recovery can identify this item
+                            // without ever mistaking a partially processed archive for valid.
+                            manifest[@"sha256"] = LBSHA256ForFile(destination) ?: @"";
+                            NSString *manifestPath = [itemDirectory stringByAppendingPathComponent:LBManifestName];
+                            NSError *pendingError = nil;
+                            NSData *pendingData = [NSPropertyListSerialization dataWithPropertyList:manifest
+                                format:NSPropertyListBinaryFormat_v1_0 options:0 error:&pendingError];
+                            BOOL pendingSaved = pendingData && [pendingData writeToFile:manifestPath
+                                options:NSDataWritingAtomic error:&pendingError];
+                            NSError *validationError = pendingError;
+                            NSDictionary *validation = nil;
+                            if (pendingSaved) {
+                                NSString *extractionPath = [itemDirectory stringByAppendingPathComponent:@"Extracted"];
+                                validation = [LBTendiesValidator validateArchiveAtPath:destination
+                                    extractToPath:extractionPath error:&validationError];
+                            } else {
+                                validation = @{@@"status": @"incomplete", @@"errors": @[@"Could not persist pending-validation manifest"]};
+                            }
                             NSMutableDictionary *validationReport = [validation mutableCopy] ?: [NSMutableDictionary dictionary];
                             NSString *validationStatus = [validationReport[@"status"] isKindOfClass:NSString.class] ? validationReport[@"status"] : @"incomplete";
                             if ([validationStatus isEqualToString:@"extracted"]) {
@@ -291,7 +307,7 @@ static NSDictionary *LBReadManagedManifest(NSString *entry) {
                         }
                     }
                 }
-                if (createdItemDirectory && !ok) [NSFileManager.defaultManager removeItemAtPath:itemDirectory error:nil];
+                if (createdItemDirectory && !ok && !preserveItemDirectory) [NSFileManager.defaultManager removeItemAtPath:itemDirectory error:nil];
             }
         } @catch (NSException *exception) {
             error = [NSError errorWithDomain:@"LumenBoard" code:202 userInfo:@{
@@ -303,10 +319,8 @@ static NSDictionary *LBReadManagedManifest(NSString *entry) {
         }
         NSString *title = ok ? @"Import complete" : @"Import failed";
         NSString *message = ok ? @"The source is stored locally. It has not been installed into PosterBoard." : (error.localizedDescription ?: @"Unknown import error.");
-        if (ok && [sourceType isEqualToString:@"tendies-unvalidated"]) {
-            NSString *manifestPath = [[LBLibraryPath() stringByAppendingPathComponent:([[NSFileManager.defaultManager contentsOfDirectoryAtPath:LBLibraryPath() error:nil] lastObject] ?: @"")] stringByAppendingPathComponent:LBManifestName];
-            (void)manifestPath;
-            message = [NSString stringWithFormat:@".tendies result: %@. Structural validation does not prove PosterBoard compatibility. Native installation remains disabled.", finalImportStatus ?: @"incomplete"];
+        if ((ok || preserveItemDirectory) && [sourceType isEqualToString:@"tendies-unvalidated"]) {
+            message = [NSString stringWithFormat:@".tendies result: %@. Structural validation does not prove PosterBoard compatibility. Native installation remains disabled.", finalImportStatus ?: @"pending-validation"];
         }
         dispatch_async(dispatch_get_main_queue(), ^{
             [self showMessage:title message:message];
